@@ -42,9 +42,13 @@ export class WebViewSession implements BrowserSession {
     const backend: Bun.WebView.Backend =
       opts.backend === "webkit"
         ? "webkit"
-        : opts.chromePath
-          ? { type: "chrome", url: false, path: opts.chromePath }
-          : { type: "chrome", url: false };
+        : {
+            type: "chrome",
+            url: false,
+            ...(opts.chromePath ? { path: opts.chromePath } : {}),
+            // Bun ignores Chromium stderr by default, hiding container sandbox/startup errors.
+            stderr: "inherit",
+          };
     this.view = new Bun.WebView({
       backend,
       width: opts.width ?? 1280,

@@ -54,7 +54,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <div className="flex h-16 shrink-0 items-center gap-2.5 px-4">
         <AppMark />
         <span className="truncate text-sm font-semibold">Auto Register</span>
-        <ModeTag status={status} />
+        {/* <ModeTag status={status} /> */}
       </div>
 
       <div className="px-3 pb-3">

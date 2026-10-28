@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { BannerSessionManager } from "../../src/banner/session";
 import { createRealBanner } from "../../src/banner/real";
 import { parseScheduleJson, parseSubmitBatch, parseTermSearch } from "../../src/banner/registrar/types";
@@ -59,6 +59,33 @@ describe("BannerSessionManager", () => {
     });
     await expect(manager.ensureWarm("120271")).rejects.toThrow("webkit_unsupported");
     expect(fake.closed).toBe(true);
+  });
+
+  test("launch failures log the cause but expose only a fixed reason code", async () => {
+    const store = new Store(":memory:");
+    const error = new Error("Chromium sandbox could not start");
+    const log = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const manager = new BannerSessionManager({
+        config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" },
+        events: new Events(store, new Bus()),
+        store,
+        clock: new FakeClock(),
+        settings: () => store.getSettings(),
+        browserFactory: async () => {
+          throw error;
+        },
+        credentials: () => CREDS,
+      });
+      await expect(manager.ensureWarm("120271")).rejects.toThrow("browser_launch_failed");
+      expect(log).toHaveBeenCalledWith("Browser launch failed", error);
+      expect(manager.status().lastError).toBe("browser_launch_failed");
+      expect(store.listEvents().find(e => e.kind === "session_error")?.detail).toBe("browser_launch_failed");
+      expect(JSON.stringify(store.listEvents())).not.toContain(error.message);
+    } finally {
+      log.mockRestore();
+      store.close();
+    }
   });
 
   test("a chrome view without CDP fails closed (no interceptor, no login)", async () => {

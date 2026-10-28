@@ -220,7 +220,10 @@ export class BannerSessionManager implements SessionManager {
     let browser: BrowserSession;
     try {
       browser = await factory({ backend: "chrome", chromePath: this.deps.config.chromePath });
-    } catch {
+    } catch (error) {
+      // Launch only opens about:blank, before credentials enter the browser. Keep the cause in
+      // server logs while exposing only the fixed reason code through the API and activity feed.
+      console.error("Browser launch failed", error);
       throw this.fail("browser_launch_failed");
     }
     if (browser.backend !== "chrome") {
