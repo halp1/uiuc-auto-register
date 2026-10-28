@@ -1,0 +1,181 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@font-face {
+  font-family: "Geist";
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-background: #000000;
+  --color-sidebar: #0a0a0a;
+  --color-surface: #0a0a0a;
+  --color-surface-2: #111111;
+  --color-hover: #0f0f0f;
+  --color-selected: #1a1a1a;
+  --color-border: #1f1f1f;
+  --color-border-strong: #2e2e2e;
+  --color-border-hover: #454545;
+  --color-fg: #ededed;
+  --color-fg-muted: #a1a1a1;
+  --color-fg-subtle: #707070;
+  --color-placeholder: #8f8f8f;
+  --color-accent: #0070f3;
+  --color-accent-hover: #0761d1;
+  --color-ready: #50e3c2;
+  --color-error: #ee0000;
+  --color-error-fg: #ff4d4d;
+  --color-warning: #f5a623;
+  --color-violet: #8e4ec6;
+  --color-violet-fg: #b88ce6;
+
+  --animate-flash: row-flash 600ms ease-out;
+  --animate-spin: spin 0.9s linear infinite;
+  --animate-nudge: nudge 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+/* The unsaved changes bar shakes when you try to leave without saving. */
+@keyframes nudge {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-nudge {
+    animation: none;
+  }
+}
+
+@keyframes row-flash {
+  from {
+    background-color: #1c1c1c;
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: dark;
+    background: var(--color-background);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--color-background);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    line-height: 1.43;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: rgb(0 112 243 / 0.35);
+    color: #ffffff;
+  }
+
+  * {
+    caret-color: var(--color-fg);
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-border-hover);
+  }
+
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+    text-underline-offset: 3px;
+  }
+
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+
+  input[type="time"]::-webkit-calendar-picker-indicator,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.7);
+    cursor: pointer;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
