@@ -17,10 +17,11 @@ import { installInterceptor, type AuthorizedBatch, type InstalledInterceptor } f
 import type { RegistrationModel } from "./guard";
 import {
   BannerSessionError,
-  SCHEDULE_STRATEGIES,
+  SCHEDULE_READER,
   SSB_PATH,
   makeUniqueSessionId,
   parseAddItems,
+  parseRegistrationSummary,
   parseScheduleJson,
   parseSubmitBatch,
   parseTermSearch,
@@ -32,6 +33,7 @@ import {
   type Eligibility,
   type InPageInit,
   type InPageResponse,
+  type RegistrationPageData,
   type ScheduleRead,
   type ScheduleStrategy,
   type SessionReason,
@@ -56,18 +58,24 @@ export interface BannerSessionDeps {
   loginTimeoutMs?: number;
 }
 
-/** Candidate schedule reads, in order. The user's probe:discover run pins which ones work at UIUC. */
-export function scheduleStrategyPath(strategy: ScheduleStrategy, term: string): string {
-  const t = encodeURIComponent(term);
-  switch (strategy) {
-    case "registrationEvents":
-      return `${SSB_PATH}/classRegistration/getRegistrationEvents?termFilter=${t}`;
-    case "classRegistrationReset":
-      return `${SSB_PATH}/classRegistration/reset?selectedTab=true&term=${t}`;
-    case "registrationHistory":
-      return `${SSB_PATH}/registrationHistory/reset?term=${t}`;
-  }
+/**
+ * Calendar events for the term the session last selected with term/search. UIUC answers HTTP 500 to any
+ * non-empty termFilter, so the term comes from the session, never from the query (verified 2026-10-28).
+ */
+export const CALENDAR_PATH = `${SSB_PATH}/classRegistration/getRegistrationEvents?termFilter=`;
+
+/** Working-set models for a drop (live only; unverified at UIUC until the swap test runs). */
+export function workingSetPath(term: string): string {
+  return `${SSB_PATH}/classRegistration/reset?selectedTab=true&term=${encodeURIComponent(term)}`;
 }
+
+/** Reads the registration page's own bootstrap data. Returns only the three fields the reader needs. */
+const REGISTRATION_PAGE_EXPR = `(() => {
+  const b = window.bootstraps;
+  if (!b) return null;
+  const copy = v => { try { return JSON.parse(JSON.stringify(v === undefined ? null : v)); } catch (e) { return null; } };
+  return { terms: copy(b.terms), multiTerm: copy(b.multiTerm), summaryModels: copy(b.summaryModels) };
+})()`;
 
 /** Page-side fetch. Args travel as JSON data; nothing secret is ever included. */
 function inPageFetchExpr(args: { url: string; method: string; form?: Record<string, string>; json?: unknown; headers?: Record<string, string>; max: number }): string {
@@ -343,7 +351,7 @@ export class BannerSessionManager implements SessionManager {
     if (this.current !== "warm") return false;
     const term = this.activeTerm ?? this.deps.settings().activeTerm ?? "";
     try {
-      await this.inPageFetch(scheduleStrategyPath("registrationEvents", term));
+      await this.inPageFetch(CALENDAR_PATH);
       this.lastKeepaliveAt = this.deps.clock.now();
       this.scheduleKeepalive();
       return true;
@@ -424,29 +432,51 @@ export class BannerSessionManager implements SessionManager {
     return this.selectTerm(term);
   }
 
+  /**
+   * The registered CRNs for a term, read the way Banner's own registration page does:
+   *  1. term/search selects the term (registration must be open for it, otherwise "term_not_open"),
+   *  2. the classRegistration page is rendered fresh and its summary (window.bootstraps.summaryModels)
+   *     is the authoritative list, including online sections with no meeting times,
+   *  3. the calendar endpoint is a cross-check: every CRN it lists must be in the summary.
+   * Anything that does not line up throws "schedule_unreadable". Never returns a partial schedule.
+   */
   async readScheduleDetailed(term: string): Promise<ScheduleRead> {
     await this.warmBase();
-    await this.selectTerm(term).catch(() => null);
-    const crns = new Set<string>();
-    const strategies: ScheduleStrategy[] = [];
-    for (const strategy of SCHEDULE_STRATEGIES) {
-      let res: InPageResponse;
-      try {
-        res = await this.inPageFetch(scheduleStrategyPath(strategy, term));
-      } catch (error) {
-        if (error instanceof BannerSessionError && error.reason === "login_required") throw error;
-        continue;
+    // term/search once per session (cached), then a fresh render of the page: the summary is rendered
+    // server-side for the session's selected term, and parseRegistrationSummary checks it is this term.
+    const eligibility = await this.selectTerm(term);
+    if (!eligibility.allowed) throw new BannerSessionError("term_not_open");
+    await this.openPage(`${BANNER_ORIGIN}${SSB_PATH}/classRegistration/classRegistration`);
+    const browser = this.requireBrowser();
+    let page: RegistrationPageData | null;
+    try {
+      page = await browser.evaluate<RegistrationPageData | null>(REGISTRATION_PAGE_EXPR);
+    } catch {
+      page = null;
+    }
+    const summary = parseRegistrationSummary(page, term);
+    if (!summary) {
+      this.lastStrategies = [];
+      throw new BannerSessionError("schedule_unreadable");
+    }
+    const strategies: ScheduleStrategy[] = ["summary"];
+    let calendar: string[] | null = null;
+    try {
+      const res = await this.inPageFetch(CALENDAR_PATH);
+      if (res.status === 200) calendar = parseScheduleJson(res.body, term);
+    } catch (error) {
+      if (error instanceof BannerSessionError && error.reason === "login_required") throw error;
+    }
+    if (calendar) {
+      // A section with meetings that the summary lacks means the summary is not the whole picture.
+      if (calendar.some(crn => !summary.includes(crn))) {
+        this.lastStrategies = [];
+        throw new BannerSessionError("schedule_unreadable");
       }
-      if (res.status !== 200) continue;
-      const found = parseScheduleJson(res.body, term);
-      if (!found) continue;
-      strategies.push(strategy);
-      found.forEach(crn => crns.add(crn));
+      strategies.push("calendar");
     }
     this.lastStrategies = strategies;
-    // The union protects more CRNs than any single strategy could miss.
-    if (strategies.length === 0) throw new BannerSessionError("schedule_unreadable");
-    return { crns: [...crns].sort(), strategies };
+    return { crns: summary, strategies };
   }
 
   async readSchedule(term: string): Promise<string[]> {
@@ -503,7 +533,7 @@ export class BannerSessionManager implements SessionManager {
   async rehearse(term: string, crns: string[]): Promise<RehearsalReport> {
     const startedAt = this.deps.clock.now();
     const blockedBefore = this.blockedTotal;
-    const report: RehearsalReport = { ok: false, startedAt, finishedAt: startedAt, steps: [], term, eligibility: null, schedule: null, crnChecks: [], blockedWrites: 0 };
+    const report: RehearsalReport = { ok: false, startedAt, finishedAt: startedAt, steps: [], term, eligibility: null, schedule: null, crnChecks: [], blockedWrites: 0, reader: SCHEDULE_READER };
     const step = async <T>(name: string, fn: () => Promise<T>, detail: (value: T) => string | null): Promise<T | null> => {
       const t0 = this.deps.clock.now();
       try {
@@ -518,11 +548,22 @@ export class BannerSessionManager implements SessionManager {
     };
     const logged = await step("login", () => this.warmBase().then(() => true), () => null);
     if (logged) {
-      report.eligibility = await step("term_search", () => this.selectTerm(term), e => (e.allowed ? "Registration allowed" : e.messages.join("; ") || "Not allowed"));
-      const schedule = await step("read_schedule", () => this.readScheduleDetailed(term), s => `${s.crns.length} CRNs via ${s.strategies.join(", ")}`);
-      report.schedule = schedule?.crns ?? null;
-      // The live registrar compares its first read against this snapshot.
-      if (schedule) this.deps.store.addScheduleSnapshot(term, schedule.crns, "rehearsal");
+      // A term that is not open for registration cannot be read or registered, so it is a failed step.
+      report.eligibility = await step(
+        "term_open",
+        async () => {
+          const e = await this.selectTerm(term);
+          if (!e.allowed) throw new BannerSessionError(`term_not_open: ${e.messages.join("; ") || "Banner says registration is not open"}`);
+          return e;
+        },
+        () => "Registration is open",
+      );
+      if (report.eligibility) {
+        const schedule = await step("read_schedule", () => this.readScheduleDetailed(term), s => `${s.crns.length} CRNs: ${s.crns.join(", ") || "none"}`);
+        report.schedule = schedule?.crns ?? null;
+        // The live registrar compares its first read against this snapshot.
+        if (schedule) this.deps.store.addScheduleSnapshot(term, schedule.crns, "rehearsal");
+      }
     }
     for (const crn of crns) {
       const check = await step(`crn_${crn}`, () => this.lookupCrn(term, crn), c => (c.exists ? c.title ?? "exists" : "not found"));
@@ -579,7 +620,7 @@ export class BannerSessionManager implements SessionManager {
         return rows;
       },
       workingSet: async (term): Promise<RegistrationModel[]> => {
-        const res = await this.inPageFetch(scheduleStrategyPath("classRegistrationReset", term));
+        const res = await this.inPageFetch(workingSetPath(term));
         const models = parseWorkingSet(res.body, term);
         if (!models) throw new BannerSessionError("working_set_unreadable");
         return models;

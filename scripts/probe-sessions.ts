@@ -8,7 +8,7 @@ import { loadConfig } from "../src/core/config";
 import { Store } from "../src/core/db";
 import { Events } from "../src/core/events";
 import { isTermCode } from "../src/core/terms";
-import { BannerSessionManager, scheduleStrategyPath } from "../src/banner/session";
+import { BannerSessionManager, CALENDAR_PATH } from "../src/banner/session";
 import { BannerSessionError } from "../src/banner/registrar/types";
 
 const config = loadConfig();
@@ -31,7 +31,7 @@ const manager = new BannerSessionManager({ config, events, store, clock: systemC
 
 async function alive(): Promise<string> {
   try {
-    const res = await manager.inPageFetch(scheduleStrategyPath("registrationEvents", term));
+    const res = await manager.inPageFetch(CALENDAR_PATH);
     return `alive (HTTP ${res.status})`;
   } catch (error) {
     return error instanceof BannerSessionError ? `lost (${error.reason})` : "lost";

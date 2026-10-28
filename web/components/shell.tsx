@@ -238,7 +238,11 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
   );
 }
 
-export function Shell({ children }: { children: ReactNode }) {
+/**
+ * `fill`: on wide screens the page gets exactly the viewport below the top bar and scrolls its own
+ * regions (the Overview's watchlist and activity feed). Narrow screens keep normal page scrolling.
+ */
+export function Shell({ children, fill = false }: { children: ReactNode; fill?: boolean }) {
   const [sheet, setSheet] = useState(false);
 
   useEffect(() => {
@@ -256,7 +260,7 @@ export function Shell({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div className="min-h-dvh md:pl-60">
+    <div className={cn("min-h-dvh md:pl-60", fill && "xl:flex xl:h-dvh xl:min-h-0 xl:flex-col xl:overflow-hidden")}>
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 border-r border-border bg-sidebar md:block">
         <SidebarContent />
       </aside>
@@ -267,7 +271,14 @@ export function Shell({ children }: { children: ReactNode }) {
         </SheetContent>
       </Sheet>
       <TopBar onMenu={() => setSheet(true)} />
-      <main className="mx-auto w-full max-w-[1200px] px-4 pb-16 pt-6 sm:px-6 sm:pt-8 lg:px-8">{children}</main>
+      <main
+        className={cn(
+          "mx-auto w-full max-w-[1200px] px-4 pb-16 pt-6 sm:px-6 sm:pt-8 lg:px-8",
+          fill && "xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:pb-8",
+        )}
+      >
+        {children}
+      </main>
     </div>
   );
 }

@@ -352,7 +352,7 @@ function WatchRow({
       onDragOver={dragHandlers.onDragOver}
       onDrop={dragHandlers.onDrop}
       className={cn(
-        "group relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2.5 px-3 py-3 transition-colors duration-150 ease-out hover:bg-hover sm:px-4 md:grid-cols-[auto_minmax(180px,1.1fr)_120px_minmax(0,2fr)_88px_auto] md:gap-x-4",
+        "group relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2.5 px-3 py-3 transition-colors duration-150 ease-out hover:bg-hover sm:px-4 @3xl:grid-cols-[auto_minmax(160px,1fr)_120px_minmax(0,2fr)_72px_auto] @3xl:gap-x-4",
         dragging && "opacity-40",
         dragOver && "shadow-[inset_0_2px_0_var(--color-accent)]",
       )}
@@ -393,14 +393,14 @@ function WatchRow({
         <span className="block truncate text-[0.8125rem] text-fg-muted">{course.title}</span>
       </a>
 
-      <div className="relative flex items-center justify-end gap-2 md:hidden">
+      <div className="relative flex items-center justify-end gap-2 @3xl:hidden">
         <ArmSwitch armed={armed} busy={armBusy} code={code} onChange={setArmed} disabled={course.state === "registered"} />
         {rowMenu()}
       </div>
 
-      <CourseState state={display} className="relative col-start-2 md:col-start-auto" />
+      <CourseState state={display} className="relative col-start-2 @3xl:col-start-auto" />
 
-      <div className="relative col-span-3 flex min-w-0 flex-wrap gap-1.5 md:col-span-1">
+      <div className="relative col-span-3 flex min-w-0 flex-wrap gap-1.5 @3xl:col-span-1">
         {course.bundles.length === 0 ? (
           <span className="text-[0.8125rem] text-fg-subtle">{course.kind === "any" ? "No matching combinations" : "No bundles"}</span>
         ) : (
@@ -414,11 +414,11 @@ function WatchRow({
         {error && <InlineError className="w-full">{error}</InlineError>}
       </div>
 
-      <span className="relative hidden text-right text-xs text-fg-subtle tabular-nums md:block">
+      <span className="relative hidden text-right text-xs text-fg-subtle tabular-nums @3xl:block">
         {checked ? relative(checked, now) : "Not checked"}
       </span>
 
-      <div className="relative hidden items-center gap-2 md:flex">
+      <div className="relative hidden items-center gap-2 @3xl:flex">
         <ArmSwitch armed={armed} busy={armBusy} code={code} onChange={setArmed} disabled={course.state === "registered"} />
         {rowMenu()}
       </div>
@@ -553,7 +553,7 @@ function Watchlist({ now }: { now: number }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <List data-watchlist aria-label="Watchlist">
+      <List data-watchlist aria-label="Watchlist" className="@container">
         {list.map((course, i) => (
           <WatchRow
             key={course.id}
@@ -599,10 +599,10 @@ function Watchlist({ now }: { now: number }) {
 
 function Feed({ now }: { now: number }) {
   const events = useStore(s => s.events);
-  const latest = events.slice(0, 30);
+  const latest = events.slice(0, 100);
   return (
-    <section aria-labelledby="feed-title" className="flex min-w-0 flex-col gap-3">
-      <div className="flex h-8 items-center justify-between">
+    <section aria-labelledby="feed-title" className="flex min-w-0 flex-col gap-3 xl:min-h-0">
+      <div className="flex h-8 shrink-0 items-center justify-between">
         <h2 id="feed-title" className="text-sm font-semibold">
           Activity
         </h2>
@@ -617,7 +617,11 @@ function Feed({ now }: { now: number }) {
       {latest.length === 0 ? (
         <p className="rounded-lg border border-border px-4 py-8 text-center text-[0.8125rem] text-fg-muted">No events yet</p>
       ) : (
-        <ol className="overflow-hidden rounded-lg border border-border bg-surface [&>*+*]:border-t [&>*+*]:border-border">
+        <ol
+          tabIndex={0}
+          aria-label="Recent activity"
+          className="relative overflow-hidden rounded-lg border border-border bg-surface max-xl:max-h-[32rem] max-xl:overflow-y-auto xl:min-h-0 xl:flex-1 xl:overflow-y-auto [&>*+*]:border-t [&>*+*]:border-border"
+        >
           {latest.map(e => (
             <EventRow key={e.id} event={e} now={now} compact />
           ))}
@@ -633,7 +637,7 @@ export function OverviewPage() {
   const count = useStore(s => s.wanted.filter(w => !s.settings?.activeTerm || w.term === s.settings.activeTerm).length);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 xl:min-h-0 xl:flex-1">
       <GuardBanner />
       <PageHeader title="Overview">
         <Button variant="primary" size="sm" onClick={() => navigate("/search")}>
@@ -643,8 +647,8 @@ export function OverviewPage() {
       </PageHeader>
       <StatusRow now={now} />
 
-      <div className="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="flex min-w-0 flex-col gap-6">
+      <div className="grid grid-cols-1 gap-8 xl:min-h-0 xl:flex-1 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="relative -mr-2 flex min-w-0 flex-col gap-6 pr-2 xl:min-h-0 xl:overflow-y-auto">
           {approvals.length > 0 && (
             <section aria-labelledby="approvals-title" className="flex flex-col gap-3">
               <h2 id="approvals-title" className="text-sm font-semibold">

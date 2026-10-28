@@ -82,5 +82,5 @@ export function App() {
         page = <NotFound />;
     }
 
-  return <Shell>{page}</Shell>;
+  return <Shell fill={ready && route.name === "overview"}>{page}</Shell>;
 }

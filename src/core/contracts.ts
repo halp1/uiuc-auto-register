@@ -39,6 +39,8 @@ export interface RehearsalReport {
   schedule: string[] | null; // CRNs currently registered for the term
   crnChecks: { crn: string; exists: boolean; title: string | null }[];
   blockedWrites: number; // write requests the interceptor refused (should be 0)
+  /** Which schedule reader produced `schedule`. Live only trusts rehearsals from the current reader. */
+  reader?: string;
 }
 
 /** Owns the logged-in Banner browser session. Only the auth module implements this. */

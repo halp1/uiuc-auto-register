@@ -88,7 +88,9 @@ Then pick which events go to which channel.
 
 ## Using Banner yourself
 
-If you want to use Banner in your own browser while the app is running, choose **Pause session for 30 min** on the dashboard so the two logins do not fight.
+You can use Banner in your own browser while the app is running. Logging in yourself does not sign the app out.
+
+Avoid dropping classes yourself while the app is armed for the same term. The app compares your schedule with its last check before every registration, and a class that disappeared without it will stop it and alert you. Run a rehearsal afterward to refresh what it expects. If you plan to make changes by hand, choose **Pause 30 min** under Session on the dashboard first.
 
 ## Deploy on Coolify
 

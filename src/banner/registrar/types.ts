@@ -24,12 +24,26 @@ export interface InPageInit {
   headers?: Record<string, string>;
 }
 
-export type ScheduleStrategy = "registrationEvents" | "classRegistrationReset" | "registrationHistory";
-export const SCHEDULE_STRATEGIES: ScheduleStrategy[] = ["registrationEvents", "classRegistrationReset", "registrationHistory"];
+/**
+ * How the schedule was read. Verified against a real account on 2026-10-28 (probe:discover):
+ *  - "summary": window.bootstraps.summaryModels on the classRegistration page, rendered after
+ *    term/search selects the term. Holds every registered section, including online sections with no
+ *    meeting times. This is the authoritative read.
+ *  - "calendar": classRegistration/getRegistrationEvents?termFilter= (empty value; any term value
+ *    returns HTTP 500). Meetings only, so it misses sections without times. Cross-check only: it must
+ *    be a subset of the summary, otherwise the read is rejected.
+ * The old candidates (getRegistrationEvents?termFilter=<term>, classRegistration/reset,
+ * registrationHistory/reset) all return HTTP 500 at UIUC.
+ */
+export type ScheduleStrategy = "summary" | "calendar";
+export const SCHEDULE_STRATEGIES: ScheduleStrategy[] = ["summary", "calendar"];
+
+/** Bumped whenever the schedule reader changes, so rehearsals run with an older reader no longer unlock Live. */
+export const SCHEDULE_READER = "summary-v1";
 
 export interface ScheduleRead {
   crns: string[];
-  /** Strategies that answered with a parseable response. */
+  /** Strategies that answered with a well-shaped response. "summary" is always first and required. */
   strategies: ScheduleStrategy[];
 }
 
@@ -99,7 +113,7 @@ function crnOf(obj: any): string | null {
 }
 
 function statusText(obj: any): string | null {
-  const parts = [obj?.statusDescription, obj?.registrationStatusDescription, obj?.courseRegistrationStatusDescription]
+  const parts = [obj?.statusDescription, obj?.registrationStatusDescription, obj?.courseRegistrationStatusDescription, obj?.status]
     .filter(v => typeof v === "string" && v.trim());
   return parts.length ? parts.join(" ") : null;
 }
@@ -163,6 +177,41 @@ export function parseScheduleJson(body: string, term: string): string[] | null {
     const status = statusText(obj);
     if (status && (!REGISTERED_STATUS.test(status) || NOT_REGISTERED.test(status))) continue;
     crns.add(crnOf(obj)!);
+  }
+  return [...crns].sort();
+}
+
+/** What the classRegistration page exposes in window.bootstraps (captured by the session). */
+export interface RegistrationPageData {
+  /** bootstraps.terms: the term the page was rendered for (a code, or a list in multi-term mode). */
+  terms: unknown;
+  multiTerm: unknown;
+  /** bootstraps.summaryModels: the registration summary rows. */
+  summaryModels: unknown;
+}
+
+/**
+ * Registered CRNs from the registration page's summary, or null when the page is not a trustworthy
+ * view of this term: not rendered for exactly this term, multi-term mode, or summary rows that are
+ * missing or malformed. Rows must carry a CRN, the term, and a status; only "Registered" style statuses
+ * count. Rows with an unrecognized status make the whole read untrustworthy rather than being skipped.
+ */
+export function parseRegistrationSummary(data: RegistrationPageData | null | undefined, term: string): string[] | null {
+  if (!data || typeof data !== "object") return null;
+  if (data.multiTerm === true) return null;
+  if (String(data.terms ?? "") !== term) return null;
+  const rows = data.summaryModels;
+  if (!Array.isArray(rows)) return null;
+  const crns = new Set<string>();
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+    const crn = crnOf(row);
+    if (!crn || String((row as any).term ?? "") !== term) return null;
+    const status = statusText(row);
+    if (!status) return null;
+    if (NOT_REGISTERED.test(status)) continue; // a dropped or errored row in the working set
+    if (!REGISTERED_STATUS.test(status)) return null;
+    crns.add(crn);
   }
   return [...crns].sort();
 }

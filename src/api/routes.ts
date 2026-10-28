@@ -1,3 +1,4 @@
+import { SCHEDULE_READER } from "../banner/registrar/types";
 import { isTermCode, termLabel } from "../core/terms";
 import { NOTIFY_EVENTS, type AnyFilters, type Day, type Settings, type SettingsPatch, type Snapshot, type StreamMessage } from "../core/types";
 import type { AppServices } from "./services";
@@ -481,8 +482,9 @@ export function apiRoutes(s: AppServices) {
         const rehearsal = s.store
           .listEvents(500)
           .find(e => e.kind === "rehearsal_result" && (e.payload as any)?.term === term && Date.now() - e.ts < 24 * 60 * 60 * 1000);
-        const report = rehearsal?.payload as { ok?: boolean; schedule?: string[] | null } | undefined;
-        if (!report?.ok || !Array.isArray(report.schedule))
+        const report = rehearsal?.payload as { ok?: boolean; schedule?: string[] | null; reader?: string } | undefined;
+        // Only the newest rehearsal counts, and only one made with the current schedule reader.
+        if (!report?.ok || !Array.isArray(report.schedule) || report.reader !== SCHEDULE_READER)
           throw new HttpError(409, `Run a rehearsal for ${termLabel(term)} first and check that it found your current classes.`);
         if ((confirmText ?? "").trim() !== termLabel(term)) throw new HttpError(400, `Type ${termLabel(term)} exactly to turn on Live.`);
         const updated = s.applySettings({ liveEnabled: true, liveTerm: term });

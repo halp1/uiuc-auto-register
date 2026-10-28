@@ -87,48 +87,112 @@ describe("BannerSessionManager", () => {
 });
 
 describe("readScheduleDetailed", () => {
-  function warmManager(responses: Record<string, { status: number; body: string }>) {
+  // Shaped like the real Fall 2026 probe (2026-10-28): 9 registered rows in summaryModels, and the
+  // calendar (getRegistrationEvents?termFilter=) lists only the 8 with meeting times.
+  const REGISTERED = (crn: string, term = "120271") => ({ courseReferenceNumber: crn, term, statusDescription: "Registered" });
+
+  function warmManager(opts: {
+    termSearch?: string;
+    page?: unknown;
+    calendar?: { status: number; body: string };
+  }) {
     const store = new Store(":memory:");
     const events = new Events(store, new Bus());
     const bannerPage = { url: "https://banner.apps.uillinois.edu/StudentRegistrationSSB/ssb/classRegistration/classRegistration", syncToken: true };
     const browser = new FakeBrowser(() => bannerPage);
     browser.page = bannerPage;
+    const fetched: string[] = [];
     browser.evaluateOther = (expr: string) => {
-      const match = /"url":"([^"]+)"/.exec(expr);
-      const url = match?.[1] ?? "";
-      if (url.includes("term/search")) return { status: 200, url: "", redirected: false, loginPage: false, contentType: "application/json", body: '{"fwdURL":"/x"}' };
-      const key = Object.keys(responses).find(k => url.includes(k));
-      const r = key ? responses[key]! : { status: 404, body: "" };
-      return { status: r.status, url: url.split("?")[0], redirected: false, loginPage: false, contentType: "application/json", body: r.body };
+      if (expr.includes("window.bootstraps")) return opts.page;
+      const url = /"url":"([^"]+)"/.exec(expr)?.[1] ?? "";
+      fetched.push(url);
+      const reply = (status: number, body: string) => ({ status, url: url.split("?")[0], redirected: false, loginPage: false, contentType: "application/json", body });
+      if (url.includes("term/search")) return reply(200, opts.termSearch ?? '{"fwdURL":"/x"}');
+      if (url.includes("getRegistrationEvents")) return opts.calendar ? reply(opts.calendar.status, opts.calendar.body) : reply(500, "<html>error</html>");
+      return reply(404, "");
     };
     const manager = new BannerSessionManager({ config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" }, events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
     // Pretend a login already happened.
     Object.assign(manager as any, { browser, current: "warm" });
-    return { manager, store };
+    return { manager, store, fetched };
   }
 
-  test("error bodies from every strategy throw schedule_unreadable", async () => {
+  test("the page summary is the schedule, including sections the calendar does not list", async () => {
+    const { manager, fetched } = warmManager({
+      page: { terms: "120271", multiTerm: false, summaryModels: ["11111", "22222", "33333"].map(c => REGISTERED(c)) },
+      calendar: { status: 200, body: JSON.stringify([{ crn: "11111", term: "120271" }, { crn: "22222", term: "120271" }]) },
+    });
+    expect(await manager.readScheduleDetailed("120271")).toEqual({ crns: ["11111", "22222", "33333"], strategies: ["summary", "calendar"] });
+    // The calendar is asked with an empty termFilter: UIUC answers 500 to any term value.
+    expect(fetched.some(u => u.endsWith("getRegistrationEvents?termFilter="))).toBe(true);
+  });
+
+  test("a calendar CRN missing from the summary rejects the read", async () => {
     const { manager } = warmManager({
-      getRegistrationEvents: { status: 200, body: '{"success":false}' },
-      "classRegistration/reset": { status: 200, body: "{}" },
-      "registrationHistory/reset": { status: 200, body: '{"error":"x"}' },
+      page: { terms: "120271", multiTerm: false, summaryModels: [REGISTERED("11111")] },
+      calendar: { status: 200, body: JSON.stringify([{ crn: "11111", term: "120271" }, { crn: "99999", term: "120271" }]) },
     });
     await expect(manager.readScheduleDetailed("120271")).rejects.toThrow("schedule_unreadable");
   });
 
-  test("a well-shaped empty response is accepted as an empty schedule", async () => {
-    const { manager } = warmManager({
-      getRegistrationEvents: { status: 200, body: "[]" },
-      "classRegistration/reset": { status: 200, body: '{"success":false}' },
-    });
-    expect(await manager.readScheduleDetailed("120271")).toEqual({ crns: [], strategies: ["registrationEvents"] });
+  test("a calendar error does not block a valid summary", async () => {
+    const { manager } = warmManager({ page: { terms: "120271", multiTerm: false, summaryModels: [REGISTERED("11111")] } });
+    expect(await manager.readScheduleDetailed("120271")).toEqual({ crns: ["11111"], strategies: ["summary"] });
   });
 
-  test("rehearse stores a rehearsal snapshot", async () => {
-    const { manager, store } = warmManager({ getRegistrationEvents: { status: 200, body: '[{"crn":"11111","term":"120271"}]' } });
+  test("a page rendered for another term, multi-term, or missing data is unreadable", async () => {
+    for (const page of [
+      { terms: "120268", multiTerm: false, summaryModels: [REGISTERED("11111", "120268")] },
+      { terms: "120271", multiTerm: true, summaryModels: [REGISTERED("11111")] },
+      { terms: "120271", multiTerm: false, summaryModels: null },
+      { terms: "120271", multiTerm: false, summaryModels: [{ courseReferenceNumber: "11111", term: "120271" }] },
+      { terms: "120271", multiTerm: false, summaryModels: [{ courseReferenceNumber: "11111", term: "120271", statusDescription: "Pending" }] },
+      null,
+    ]) {
+      const { manager } = warmManager({ page });
+      await expect(manager.readScheduleDetailed("120271")).rejects.toThrow("schedule_unreadable");
+    }
+  });
+
+  test("an empty summary is a genuinely empty schedule", async () => {
+    const { manager } = warmManager({ page: { terms: "120271", multiTerm: false, summaryModels: [] }, calendar: { status: 200, body: "[]" } });
+    expect(await manager.readScheduleDetailed("120271")).toEqual({ crns: [], strategies: ["summary", "calendar"] });
+  });
+
+  test("dropped rows in the summary are not on the schedule", async () => {
+    const { manager } = warmManager({
+      page: { terms: "120271", multiTerm: false, summaryModels: [REGISTERED("11111"), { courseReferenceNumber: "22222", term: "120271", statusDescription: "Web Dropped" }] },
+    });
+    expect((await manager.readScheduleDetailed("120271")).crns).toEqual(["11111"]);
+  });
+
+  test("a term that is not open for registration cannot be read", async () => {
+    const { manager } = warmManager({
+      termSearch: JSON.stringify({ regAllowed: false, studentEligFailures: ["Term not eligible for registration"] }),
+      page: { terms: "120271", multiTerm: false, summaryModels: [] },
+    });
+    await expect(manager.readScheduleDetailed("120271")).rejects.toThrow("term_not_open");
+  });
+
+  test("rehearse stores a rehearsal snapshot and records the reader", async () => {
+    const { manager, store } = warmManager({ page: { terms: "120271", multiTerm: false, summaryModels: [REGISTERED("11111")] } });
     const report = await manager.rehearse("120271", []);
+    expect(report.ok).toBe(true);
     expect(report.schedule).toEqual(["11111"]);
+    expect(report.reader).toBe("summary-v1");
     expect(store.latestSchedule("120271")!.crns).toEqual(["11111"]);
+  });
+
+  test("rehearsing a term that is not open fails instead of passing with an empty schedule", async () => {
+    const { manager, store } = warmManager({
+      termSearch: JSON.stringify({ regAllowed: false, studentEligFailures: ["Term not eligible for registration"] }),
+      page: { terms: "120271", multiTerm: false, summaryModels: [] },
+    });
+    const report = await manager.rehearse("120271", []);
+    expect(report.ok).toBe(false);
+    expect(report.schedule).toBeNull();
+    expect(report.steps.find(s => s.name === "term_open")).toMatchObject({ ok: false });
+    expect(store.latestSchedule("120271")).toBeNull();
   });
 });
 

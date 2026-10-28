@@ -37,7 +37,7 @@ function fakeApi(opts: { schedule?: string[]; strategies?: () => ScheduleStrateg
   const api: BannerWriteApi = {
     ensureWarm: async () => void calls.push("ensureWarm"),
     readSchedule: async () => (calls.push("readSchedule"), [...schedule]),
-    readScheduleDetailed: async () => (calls.push("readSchedule"), { crns: [...schedule], strategies: opts.strategies?.() ?? ["registrationEvents"] }),
+    readScheduleDetailed: async () => (calls.push("readSchedule"), { crns: [...schedule], strategies: opts.strategies?.() ?? ["summary"] }),
     eligibility: async () => ({ allowed: true, messages: [] }),
     lookupCrn: async (_t, crn) => ({ crn, exists: true, title: null }),
     blockedWrites: () => 0,
@@ -208,7 +208,7 @@ describe("LiveRegistrar schedule guards", () => {
   test("the post-submit read using different strategies cannot verify", async () => {
     const e = env();
     let reads = 0;
-    const fake = fakeApi({ strategies: () => (reads++ === 0 ? ["registrationEvents", "classRegistrationReset"] : ["classRegistrationReset"]) });
+    const fake = fakeApi({ strategies: () => (reads++ === 0 ? ["summary", "calendar"] : ["summary"]) });
     const r = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187"]));
     expect(r.outcome).toBe("aborted");
     expect(r.classification).toBe("unknown");
