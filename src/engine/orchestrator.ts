@@ -75,7 +75,9 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
     this.evalQueued = true;
     void this.withLock(async () => {
       this.evalQueued = false;
-      if (!this.stopped) await this.runEvaluate(reason);
+      if (this.stopped) return;
+      await this.runEvaluate(reason);
+      this.scheduleApprovalTimer();
     });
   }
 
@@ -645,10 +647,13 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
     this.approvalTimer?.cancel();
     this.approvalTimer = null;
     if (this.stopped) return;
+    // While halted, auto approvals cannot run, so they set no timer (a due one would refire at once).
+    // Every evaluate reschedules, which covers resume.
+    const halted = this.haltReason() !== null;
     let next = Infinity;
     for (const approval of this.deps.store.pendingApprovals()) {
       if (approval.remindAt !== null) next = Math.min(next, approval.remindAt);
-      if (approval.autoAt !== null) next = Math.min(next, approval.autoAt);
+      if (approval.autoAt !== null && !halted) next = Math.min(next, approval.autoAt);
     }
     if (next === Infinity) return;
     this.approvalTimer = this.deps.clock.setTimeout(() => {

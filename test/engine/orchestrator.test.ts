@@ -442,6 +442,31 @@ describe("approve mode", () => {
     expect(t.store.getApproval(approval.id)!.state).toBe("auto");
     expect(t.store.getWanted(course.id)!.state).toBe("registered");
   });
+
+  // Regression: a due auto approval while paused rescheduled itself with a 0 ms timer forever.
+  test("a due auto approval waits through a pause without spinning, then runs on resume", async () => {
+    const t = setup({ settings: { approvalMode: "approve", approvalAutoAfterMin: 10 } });
+    const course = t.want("CS", "225", [[LEC]]);
+    t.sim.setSeats(T, LEC, 1);
+    await t.tick();
+    t.orchestrator.pauseAll("test");
+    let immediate = 0;
+    const setTimeout = t.clock.setTimeout.bind(t.clock);
+    t.clock.setTimeout = (fn, ms) => {
+      if (ms === 0) immediate++;
+      return setTimeout(fn, ms);
+    };
+    await t.clock.advance(15 * 60_000);
+    await t.orchestrator.idle();
+    expect(immediate).toBeLessThan(3);
+    expect(t.registerCalls.length).toBe(0);
+    t.orchestrator.resumeAll("test");
+    await t.orchestrator.idle();
+    await t.clock.advance(1);
+    await t.orchestrator.idle();
+    expect(t.registerCalls.length).toBe(1);
+    expect(t.store.getWanted(course.id)!.state).toBe("registered");
+  });
 });
 
 describe("rehearsal dry runs", () => {
