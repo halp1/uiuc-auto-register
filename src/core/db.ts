@@ -12,6 +12,11 @@ import {
   type CourseState,
   type NewEvent,
   type NotifyEvent,
+  type Plan,
+  type PlanBreak,
+  type PlanCourse,
+  type PlanSort,
+  type PlanTarget,
   type PublicSettings,
   type Route,
   type SeatInfo,
@@ -71,7 +76,26 @@ const MIGRATIONS: string[] = [
    CREATE TABLE cat_meta (term TEXT PRIMARY KEY, synced_at INTEGER NOT NULL, courses INTEGER NOT NULL);
    CREATE TABLE linked_options (term TEXT NOT NULL, crn TEXT NOT NULL, options TEXT NOT NULL,
      fetched_at INTEGER NOT NULL, PRIMARY KEY (term, crn));`,
+  `CREATE TABLE plans (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, term TEXT NOT NULL, name TEXT NOT NULL,
+     position INTEGER NOT NULL DEFAULT 0, breaks TEXT NOT NULL DEFAULT '[]',
+     ignore_registered INTEGER NOT NULL DEFAULT 0, open_only INTEGER NOT NULL DEFAULT 0,
+     sort TEXT NOT NULL DEFAULT 'open', target TEXT,
+     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+   CREATE INDEX plans_term ON plans(term, position);
+   CREATE TABLE plan_courses (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     plan_id INTEGER NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+     subject TEXT NOT NULL, number TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+     included INTEGER NOT NULL DEFAULT 1, excluded_crns TEXT NOT NULL DEFAULT '[]',
+     locked TEXT, backups INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0,
+     UNIQUE (plan_id, subject, number));
+   ALTER TABLE wanted_courses ADD COLUMN plan_id INTEGER;`,
 ];
+
+export const PLAN_LIMITS = { plansPerTerm: 10, coursesPerPlan: 12, breaks: 20, excludedCrns: 60 } as const;
+
+const PLAN_SORTS: readonly PlanSort[] = ["open", "days", "start", "end", "gaps"];
 
 export function defaultRouting(): Record<NotifyEvent, Route> {
   return Object.fromEntries(NOTIFY_EVENTS.map(event => [event, { discord: false, push: false }])) as Record<
@@ -89,6 +113,10 @@ export function defaultSettings(): Settings {
     overnightSlow: true,
     activeTerm: null,
     ticketAt: null,
+    ticketAuto: true,
+    ticketSource: null,
+    ticketCheckedAt: null,
+    ticketCheckedTerm: null,
     liveEnabled: false,
     liveTerm: null,
     swapsUnlocked: false,
@@ -237,7 +265,13 @@ export class Store {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       bundles: (bundles.all(row.id) as Row[]).map(bundleFromRow),
+      planId: row.plan_id ?? null,
     }));
+  }
+
+  /** Link (or unlink with null) a wanted course to the plan that targeted it. */
+  setWantedPlan(id: number, planId: number | null): void {
+    this.db.query("UPDATE wanted_courses SET plan_id = ?, updated_at = ? WHERE id = ?").run(planId, Date.now(), id);
   }
 
   getWanted(id: number): WantedCourse | null {
@@ -488,6 +522,152 @@ export class Store {
   approvalDiscordMessage(id: number): string | null {
     const row = this.db.query("SELECT discord_message_id FROM approvals WHERE id = ?").get(id) as Row | null;
     return row?.discord_message_id ?? null;
+  }
+
+  // ---------- schedule plans ----------
+  private planFromRow(row: Row): Plan {
+    const courses = (this.db.query("SELECT * FROM plan_courses WHERE plan_id = ? ORDER BY position, id").all(row.id) as Row[]).map(
+      (course): PlanCourse => ({
+        id: course.id,
+        planId: course.plan_id,
+        subject: course.subject,
+        number: course.number,
+        title: course.title,
+        included: Boolean(course.included),
+        excludedCrns: JSON.parse(course.excluded_crns),
+        locked: course.locked ? JSON.parse(course.locked) : null,
+        backups: Boolean(course.backups),
+        position: course.position,
+      }),
+    );
+    return {
+      id: row.id,
+      term: row.term,
+      name: row.name,
+      position: row.position,
+      breaks: JSON.parse(row.breaks) as PlanBreak[],
+      ignoreRegistered: Boolean(row.ignore_registered),
+      openOnly: Boolean(row.open_only),
+      sort: (PLAN_SORTS as readonly string[]).includes(row.sort) ? row.sort : "open",
+      target: row.target ? (JSON.parse(row.target) as PlanTarget) : null,
+      courses,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /** Plans for a term in display order. Creates "Plan 1" when the term has none. */
+  listPlans(term: string): Plan[] {
+    const query = () => this.db.query("SELECT * FROM plans WHERE term = ? ORDER BY position, id").all(term) as Row[];
+    let rows = query();
+    if (rows.length === 0) {
+      this.createPlan(term, "Plan 1");
+      rows = query();
+    }
+    return rows.map(row => this.planFromRow(row));
+  }
+
+  getPlan(id: number): Plan | null {
+    const row = this.db.query("SELECT * FROM plans WHERE id = ?").get(id) as Row | null;
+    return row ? this.planFromRow(row) : null;
+  }
+
+  countPlans(term: string): number {
+    return (this.db.query("SELECT COUNT(*) AS n FROM plans WHERE term = ?").get(term) as Row).n as number;
+  }
+
+  createPlan(term: string, name: string): Plan {
+    const now = Date.now();
+    const max = this.db.query("SELECT COALESCE(MAX(position), -1) AS p FROM plans WHERE term = ?").get(term) as Row;
+    const result = this.db
+      .query("INSERT INTO plans (term, name, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(term, name, (max.p as number) + 1, now, now);
+    return this.getPlan(Number(result.lastInsertRowid))!;
+  }
+
+  updatePlan(
+    id: number,
+    patch: Partial<Pick<Plan, "name" | "breaks" | "ignoreRegistered" | "openOnly" | "sort" | "target">>,
+  ): Plan | null {
+    const map: Record<string, [string, (v: any) => unknown]> = {
+      name: ["name", v => v],
+      breaks: ["breaks", v => JSON.stringify(v)],
+      ignoreRegistered: ["ignore_registered", v => (v ? 1 : 0)],
+      openOnly: ["open_only", v => (v ? 1 : 0)],
+      sort: ["sort", v => v],
+      target: ["target", v => (v === null ? null : JSON.stringify(v))],
+    };
+    this.setColumns("plans", id, patch, map);
+    return this.getPlan(id);
+  }
+
+  /** Delete a plan. Wanted courses it targeted keep their bundles but lose the link. */
+  deletePlan(id: number): void {
+    this.tx(() => {
+      this.db.query("UPDATE wanted_courses SET plan_id = NULL WHERE plan_id = ?").run(id);
+      this.db.query("DELETE FROM plans WHERE id = ?").run(id);
+    });
+  }
+
+  addPlanCourse(planId: number, input: { subject: string; number: string; title: string }): PlanCourse {
+    const max = this.db.query("SELECT COALESCE(MAX(position), -1) AS p FROM plan_courses WHERE plan_id = ?").get(planId) as Row;
+    const result = this.db
+      .query("INSERT INTO plan_courses (plan_id, subject, number, title, position) VALUES (?, ?, ?, ?, ?)")
+      .run(planId, input.subject.toUpperCase(), input.number, input.title, (max.p as number) + 1);
+    this.touchPlan(planId);
+    return this.getPlan(planId)!.courses.find(course => course.id === Number(result.lastInsertRowid))!;
+  }
+
+  updatePlanCourse(
+    planId: number,
+    courseId: number,
+    patch: Partial<Pick<PlanCourse, "included" | "excludedCrns" | "locked" | "backups" | "title">>,
+  ): PlanCourse | null {
+    const map: Record<string, [string, (v: any) => unknown]> = {
+      included: ["included", v => (v ? 1 : 0)],
+      excludedCrns: ["excluded_crns", v => JSON.stringify(v)],
+      locked: ["locked", v => (v === null ? null : JSON.stringify(v))],
+      backups: ["backups", v => (v ? 1 : 0)],
+      title: ["title", v => v],
+    };
+    const sets: string[] = [];
+    const values: any[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const entry = map[key];
+      if (!entry || value === undefined) continue;
+      sets.push(`${entry[0]} = ?`);
+      values.push(entry[1](value));
+    }
+    if (sets.length) {
+      this.db.query(`UPDATE plan_courses SET ${sets.join(", ")} WHERE id = ? AND plan_id = ?`).run(...values, courseId, planId);
+      this.touchPlan(planId);
+    }
+    return this.getPlan(planId)?.courses.find(course => course.id === courseId) ?? null;
+  }
+
+  deletePlanCourse(planId: number, courseId: number): boolean {
+    const changed = this.db.query("DELETE FROM plan_courses WHERE id = ? AND plan_id = ?").run(courseId, planId).changes > 0;
+    if (changed) this.touchPlan(planId);
+    return changed;
+  }
+
+  private touchPlan(id: number): void {
+    this.db.query("UPDATE plans SET updated_at = ? WHERE id = ?").run(Date.now(), id);
+  }
+
+  private setColumns(table: "plans", id: number, patch: Record<string, unknown>, map: Record<string, [string, (v: any) => unknown]>): void {
+    const sets: string[] = [];
+    const values: any[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const entry = map[key];
+      if (!entry || value === undefined) continue;
+      sets.push(`${entry[0]} = ?`);
+      values.push(entry[1](value));
+    }
+    if (!sets.length) return;
+    sets.push("updated_at = ?");
+    values.push(Date.now(), id);
+    this.db.query(`UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?`).run(...values);
   }
 
   // ---------- schedule snapshots ----------

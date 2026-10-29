@@ -1,4 +1,4 @@
-import { Bell, CircleCheck, CircleX, LogOut, Pause, Play, Send, TriangleAlert, Zap } from "lucide-react";
+import { Bell, CircleCheck, CircleX, LogOut, Pause, Play, RefreshCw, Send, TriangleAlert, Zap } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RehearsalReport } from "../../src/core/contracts";
 import { NOTIFY_EVENTS, type NotifyEvent, type PublicSettings, type Route, type SettingsPatch } from "../../src/core/types";
@@ -14,7 +14,7 @@ import { Select } from "@/components/ui/select";
 import { Status } from "@/components/ui/status-dot";
 import { Switch } from "@/components/ui/switch";
 import { api, type SimState } from "@/lib/api";
-import { chicagoLocalToIso, countdown, isoToChicagoLocal, notifyLabels, termName, useNow } from "@/lib/format";
+import { chicagoLocalToIso, countdown, formatDateTime, isoToChicagoLocal, notifyLabels, termName, useNow } from "@/lib/format";
 import { setNavigationGuard } from "@/lib/router";
 import { local, useStore } from "@/lib/store";
 import { cn, errorMessage } from "@/lib/utils";
@@ -509,9 +509,18 @@ function PollingCard({ settings }: { settings: PublicSettings }) {
 function TermCard({ settings }: { settings: PublicSettings }) {
   const terms = useStore(s => s.terms);
   const ticket = useStore(s => s.status!.ticket);
+  const mode = useStore(s => s.status!.mode);
   const now = useNow(1000);
-  const form = useForm({ activeTerm: settings.activeTerm ?? "", ticketAt: isoToChicagoLocal(settings.ticketAt) });
+  const form = useForm({
+    activeTerm: settings.activeTerm ?? "",
+    ticketAt: isoToChicagoLocal(settings.ticketAt),
+    ticketAuto: settings.ticketAuto,
+  });
   const action = useAction();
+  const detect = useAction();
+  const [found, setFound] = useState<string | null>(null);
+
+  const savedLocal = isoToChicagoLocal(settings.ticketAt);
 
   async function save() {
     const iso = form.value.ticketAt ? chicagoLocalToIso(form.value.ticketAt) : null;
@@ -519,16 +528,34 @@ function TermCard({ settings }: { settings: PublicSettings }) {
       action.setError("Enter a full date and time.");
       return false;
     }
-    const next = await action.run("save", () =>
-      saveSettings({ activeTerm: form.value.activeTerm || null, ticketAt: iso }),
-    );
+    const patch: SettingsPatch = { activeTerm: form.value.activeTerm || null };
+    // Only send the ticket when it was edited, so a round trip through the minute-precision field never reads as a manual change.
+    if (form.value.ticketAt !== savedLocal) patch.ticketAt = iso;
+    if (form.value.ticketAuto !== settings.ticketAuto || patch.ticketAt !== undefined) patch.ticketAuto = form.value.ticketAuto;
+    const next = await action.run("save", () => saveSettings(patch));
     if (!next) return false;
-    form.commit({ activeTerm: next.activeTerm ?? "", ticketAt: isoToChicagoLocal(next.ticketAt) });
+    form.commit({ activeTerm: next.activeTerm ?? "", ticketAt: isoToChicagoLocal(next.ticketAt), ticketAuto: next.ticketAuto });
     return true;
   }
   usePending("term", { dirty: form.dirty, save, reset: () => (form.reset(), action.setError(null)) });
 
+  async function checkNow() {
+    const term = form.value.activeTerm || settings.activeTerm;
+    if (!term) return;
+    setFound(null);
+    const res = await detect.run("detect", () => api.detectTicket(term));
+    if (res && res.found && !res.applied && res.ticketAt) setFound(res.ticketAt);
+  }
+
   const ticketMs = settings.ticketAt ? new Date(settings.ticketAt).getTime() : null;
+  const ticketEdited = form.value.ticketAt !== savedLocal;
+  const checkedHere = settings.ticketCheckedAt !== null && settings.ticketCheckedTerm === settings.activeTerm && !ticketEdited;
+  const source =
+    checkedHere && settings.ticketSource === "banner" && settings.ticketAt
+      ? `From Banner, checked ${formatCheck(settings.ticketCheckedAt!, now)}`
+      : checkedHere && !settings.ticketAt
+        ? `Checked ${formatCheck(settings.ticketCheckedAt!, now)}, no ticket posted yet`
+        : null;
 
   return (
     <Card id="ticket" className="scroll-mt-20">
@@ -544,23 +571,72 @@ function TermCard({ settings }: { settings: PublicSettings }) {
               options={terms.map(t => ({ value: t.code, label: `${t.description}  ${t.code}` }))}
             />
           </Field>
-          <Field label="Time ticket" htmlFor="ticket-at" hint="Central time">
+          <Field
+            label="Time ticket"
+            htmlFor="ticket-at"
+            hint={
+              <span className="flex flex-col gap-0.5">
+                <span>Central time</span>
+                {source && <span id="ticket-source">{source}</span>}
+              </span>
+            }
+          >
             <div className="flex gap-2">
               <Input
                 id="ticket-at"
                 type="datetime-local"
+                aria-describedby={source ? "ticket-source" : undefined}
                 className="font-mono text-[0.8125rem] tabular-nums"
                 value={form.value.ticketAt}
-                onChange={e => form.set({ ticketAt: e.target.value })}
+                onChange={e => form.set({ ticketAt: e.target.value, ticketAuto: false })}
               />
               {form.value.ticketAt && (
-                <Button variant="ghost" size="sm" className="h-9" onClick={() => form.set({ ticketAt: "" })}>
+                <Button variant="ghost" size="sm" className="h-9" onClick={() => form.set({ ticketAt: "", ticketAuto: false })}>
                   Clear
                 </Button>
               )}
             </div>
           </Field>
         </div>
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+          <label className="flex min-w-0 items-center gap-3">
+            <Switch
+              checked={form.value.ticketAuto}
+              onCheckedChange={v => form.set({ ticketAuto: v })}
+              aria-describedby="ticket-auto-hint"
+            />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">Auto detect</span>
+              <span id="ticket-auto-hint" className="block text-[0.8125rem] text-fg-muted">
+                Reads Banner every 12 hours
+              </span>
+            </span>
+          </label>
+          {mode !== "simulated" && (
+            <Button size="sm" onClick={checkNow} loading={detect.busy === "detect"} disabled={!(form.value.activeTerm || settings.activeTerm)}>
+              {detect.busy !== "detect" && <RefreshCw aria-hidden />}
+              Check now
+            </Button>
+          )}
+        </div>
+        <InlineError>{detect.error}</InlineError>
+        {found && (
+          <div role="status" className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-black px-3 py-2 text-[0.8125rem]">
+            <span className="flex-1 text-fg-muted">
+              Banner shows <span className="font-mono text-fg tabular-nums">{formatDateTime(found)}</span>
+            </span>
+            <Button
+              size="xs"
+              variant="secondary"
+              onClick={() => {
+                form.set({ ticketAt: isoToChicagoLocal(found), ticketAuto: true });
+                setFound(null);
+              }}
+            >
+              Use it
+            </Button>
+          </div>
+        )}
       </CardBody>
       <CardNote
         error={action.error}
@@ -575,6 +651,14 @@ function TermCard({ settings }: { settings: PublicSettings }) {
       />
     </Card>
   );
+}
+
+/** "2:14 PM" today, "Oct 27 at 2:14 PM" otherwise, Central time. */
+function formatCheck(ts: number, now: number) {
+  const day = (t: number) => new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "short" }).format(t);
+  if (day(ts) === day(now))
+    return new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit" }).format(ts);
+  return formatDateTime(ts);
 }
 
 // ---------- Notifications ----------

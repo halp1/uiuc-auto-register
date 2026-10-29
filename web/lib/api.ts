@@ -3,9 +3,14 @@ import type {
   AnyFilters,
   AppEvent,
   CourseDetail,
+  Plan,
+  PlanCourse,
+  PlanGenerateResult,
+  PlanPick,
   PublicSettings,
   SearchHit,
   SettingsPatch,
+  TicketDetectResult,
   Snapshot,
   WantedCourse,
 } from "../../src/core/types";
@@ -95,6 +100,20 @@ export const api = {
   reset: (id: number) => request<WantedCourse>("POST", `/api/wanted/${id}/reset`),
   putBundles: (id: number, bundles: string[][]) => request<WantedCourse>("PUT", `/api/wanted/${id}/bundles`, { bundles }),
 
+  plans: (term: string) => request<Plan[]>("GET", `/api/plans?term=${enc(term)}`),
+  createPlan: (term: string, name: string) => request<Plan>("POST", "/api/plans", { term, name }),
+  patchPlan: (id: number, body: Partial<Pick<Plan, "name" | "breaks" | "ignoreRegistered" | "openOnly" | "sort">>) =>
+    request<Plan>("PATCH", `/api/plans/${id}`, body),
+  deletePlan: (id: number) => request<{ ok: true }>("DELETE", `/api/plans/${id}`),
+  addPlanCourse: (id: number, subject: string, number: string) =>
+    request<Plan>("POST", `/api/plans/${id}/courses`, { subject, number }),
+  patchPlanCourse: (id: number, cid: number, body: Partial<Pick<PlanCourse, "included" | "excludedCrns" | "locked" | "backups">>) =>
+    request<Plan>("PATCH", `/api/plans/${id}/courses/${cid}`, body),
+  deletePlanCourse: (id: number, cid: number) => request<Plan>("DELETE", `/api/plans/${id}/courses/${cid}`),
+  generatePlan: (id: number) => request<PlanGenerateResult>("POST", `/api/plans/${id}/generate`),
+  targetPlan: (id: number, picks: PlanPick[]) =>
+    request<{ plan: Plan; wanted: WantedCourse[] }>("POST", `/api/plans/${id}/target`, { picks }),
+
   pauseAll: () => request<{ ok: true }>("POST", "/api/control/pause"),
   resumeAll: () => request<{ ok: true }>("POST", "/api/control/resume"),
   clearGuard: () => request<{ ok: true }>("POST", "/api/guard/clear"),
@@ -106,6 +125,7 @@ export const api = {
     request<PublicSettings>("POST", "/api/live", { enabled, confirmText }),
 
   putSettings: (patch: SettingsPatch) => request<PublicSettings>("PUT", "/api/settings", patch),
+  detectTicket: (term: string) => request<TicketDetectResult>("POST", "/api/ticket/detect", { term }),
   testNotify: (channel: "discord" | "push") =>
     request<{ ok: boolean; detail: string }>("POST", `/api/notify/test/${channel}`),
   vapid: () => request<{ publicKey: string }>("GET", "/api/push/vapid"),

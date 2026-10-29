@@ -15,6 +15,7 @@ import {
   PASSWD_SELECTORS,
   SUBMIT_SELECTORS,
   UPN_SELECTORS,
+  cancelPasskey,
   clearField,
   fieldFilled,
   focusCheck,
@@ -52,6 +53,7 @@ export type LoginStage =
   | "netid"
   | "password"
   | "password_submitted"
+  | "passkey_fallback"
   | "mfa_method"
   | "totp_wait"
   | "totp"
@@ -78,6 +80,7 @@ export type LoginReason =
   | "access_blocked"
   | "microsoft_sign_in_error"
   | "unsupported_mfa_method"
+  | "passkey_required"
   | "unsupported_mfa_or_timeout";
 
 export class LoginError extends Error {
@@ -114,29 +117,8 @@ export function fullNetId(netid: string): string {
   return netid.includes("@") ? netid : `${netid}@illinois.edu`;
 }
 
-export interface LoginDiagnostic {
-  reason: "waiting" | "timeout" | "blocked";
-  elapsedMs: number;
-  stage: LoginStage | null;
-  page: "unavailable" | "banner" | "identity_provider" | "microsoft" | "auth" | "known_other" | "unknown";
-  passwordProgress: "not_started" | "waiting_for_sign_in" | "waiting_for_field" | "ready_to_submit" | "submitted";
-  snapshotFailures: number;
-  ready: boolean | null;
-  passwordField: boolean | null;
-  signInReady: boolean | null;
-  passwordError: boolean | null;
-  emptyPassword: boolean | null;
-  codeField: boolean | null;
-  verifyIdentity: boolean | null;
-  prompt: PageSnapshot["prompt"] | null;
-  otherWayAvailable: boolean | null;
-  appCodeOptionAvailable: boolean | null;
-}
-
 export interface LoginOptions {
   onStage?: (stage: LoginStage) => void;
-  /** Fixed categories and booleans only, never page text, URLs, identifiers, or field values. */
-  onDiagnostic?: (diagnostic: LoginDiagnostic) => void;
   signal?: AbortSignal;
   tracker?: TotpWindowTracker;
   clock?: Clock;
@@ -152,6 +134,7 @@ export interface LoginOptions {
 const OTHER_WAY = /use another way|use a different verification option|sign in another way|other ways to sign in|can.t use my microsoft authenticator/i;
 // Match known app-code choices, not actions offering to text/email/call with a code.
 const CODE_OPTION = /^(?:(?:use|enter) (?:a |the )?verification code|(?:use |enter )?(?:a |the )?(?:verification )?code from (?:my |your |an? )?(?:microsoft )?(?:authenticator(?: app)?|mobile app))$/i;
+const PASSKEY_FALLBACK_TIMEOUT_MS = 15_000;
 
 /** Log in and resolve when the Banner page with a synchronizer token is showing. */
 export async function login(session: BrowserSession, creds: Credentials | null, opts: LoginOptions = {}): Promise<void> {
@@ -160,43 +143,10 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
   const clock = opts.clock ?? systemClock;
   const tracker = opts.tracker ?? new TotpWindowTracker();
   const pollMs = opts.pollMs ?? 500;
-  const startedAt = clock.now();
-  const deadline = startedAt + (opts.timeoutMs ?? 180_000);
+  const deadline = clock.now() + (opts.timeoutMs ?? 180_000);
   const unknownHostMs = opts.unknownHostMs ?? 15_000;
   const signal = opts.signal;
   let lastStage: LoginStage | null = null;
-  let passwordProgress: LoginDiagnostic["passwordProgress"] = "not_started";
-  let diagnosticPage: LoginDiagnostic["page"] = "unavailable";
-  let diagnosticSnapshot: PageSnapshot | null = null;
-  let snapshotFailures = 0;
-  let lastDiagnosticAt = startedAt;
-  const diagnose = (reason: LoginDiagnostic["reason"]) => {
-    if (!opts.onDiagnostic || (reason === "waiting" && clock.now() - lastDiagnosticAt < 15_000)) return;
-    lastDiagnosticAt = clock.now();
-    const snap = diagnosticSnapshot;
-    try {
-      opts.onDiagnostic({
-        reason,
-        elapsedMs: Math.max(0, clock.now() - startedAt),
-        stage: lastStage,
-        page: diagnosticPage,
-        passwordProgress,
-        snapshotFailures,
-        ready: snap?.ready ?? null,
-        passwordField: snap?.fields.passwd ?? null,
-        signInReady: snap?.flags.signInReady ?? null,
-        passwordError: snap?.flags.passwordError ?? null,
-        emptyPassword: snap?.flags.emptyPassword ?? null,
-        codeField: snap?.fields.otc ?? null,
-        verifyIdentity: snap?.flags.verifyIdentity ?? null,
-        prompt: snap?.prompt ?? null,
-        otherWayAvailable: snap ? snap.actions.some(label => OTHER_WAY.test(label)) : null,
-        appCodeOptionAvailable: snap ? snap.actions.some(label => CODE_OPTION.test(label)) : null,
-      });
-    } catch {
-      // Diagnostic observers must not change the login flow.
-    }
-  };
   const stage = (s: LoginStage) => {
     if (s === lastStage) return;
     lastStage = s;
@@ -281,21 +231,14 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
   let codeEntered = false;
   let kmsiClicks = 0;
   let unknownSince: number | null = null;
+  let passkeyBackAt: number | null = null;
+  let lastPrompt: PageSnapshot["prompt"] | null = null;
 
   while (clock.now() < deadline) {
     check();
     const snap: PageSnapshot | null = await snapshot(session);
     check();
     const host = currentHost(session);
-    diagnosticSnapshot = snap && host && snap.host === host && snap.secure ? snap : null;
-    if (!diagnosticSnapshot || !host) diagnosticPage = "unavailable";
-    else if (host === BANNER_HOST) diagnosticPage = "banner";
-    else if (IDP_DISCO_HOSTS.includes(host)) diagnosticPage = "identity_provider";
-    else if (MICROSOFT_HOSTS.includes(host)) diagnosticPage = "microsoft";
-    else if (AUTH_HOSTS.includes(host)) diagnosticPage = "auth";
-    else diagnosticPage = KNOWN_HOSTS.has(host) ? "known_other" : "unknown";
-    if (!snap) snapshotFailures++;
-    diagnose("waiting");
     if (!snap || !host || snap.host !== host || !snap.secure) {
       await sleep(pollMs);
       continue;
@@ -308,6 +251,7 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
       continue;
     }
     unknownSince = null;
+    lastPrompt = snap.prompt;
 
     if (host === BANNER_HOST) {
       if (snap.syncToken) {
@@ -344,9 +288,30 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
       else if (snap.prompt === "password_change_required") blockedReason = "password_change_required";
       else if (snap.prompt === "access_blocked") blockedReason = "access_blocked";
       else if (snap.prompt === "sign_in_error") blockedReason = "microsoft_sign_in_error";
-      if (blockedReason) {
-        diagnose("blocked");
-        throw new HumanActionRequired(blockedReason);
+      if (blockedReason) throw new HumanActionRequired(blockedReason);
+
+      // Cancel a browser-owned FIDO prompt once to select an available app-code method.
+      let fidoRoute = false;
+      try {
+        fidoRoute = /\/fido\/get\/?$/i.test(new URL(session.url()).pathname);
+      } catch {
+        // A transitioning URL is not permission to click Back.
+      }
+      const alternateAvailable = snap.actions.some(label => OTHER_WAY.test(label) || CODE_OPTION.test(label));
+      if (snap.prompt === "passkey" && noCredentialForm && fidoRoute && !alternateAvailable && !codeEntered) {
+        if (passkeyBackAt === null) {
+          passkeyBackAt = clock.now();
+          stage("passkey_fallback");
+          if (!(await cancelPasskey(session))) throw new HumanActionRequired("passkey_required");
+        } else if (clock.now() - passkeyBackAt >= PASSKEY_FALLBACK_TIMEOUT_MS) {
+          throw new HumanActionRequired("passkey_required");
+        }
+        await sleep(pollMs);
+        continue;
+      }
+      if (passkeyBackAt !== null && (snap.fields.passwd || snap.fields.loginfmt)) {
+        // Back may return to credentials instead of offering an alternate factor. Do not resubmit.
+        throw new HumanActionRequired("passkey_required");
       }
 
       if (snap.flags.kmsi) {
@@ -358,19 +323,15 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
 
       if (snap.fields.passwd && !passwordDone) {
         stage("password");
-        passwordProgress = "waiting_for_sign_in";
         // Wait for Microsoft's transition: visible password field plus a "Sign in" submit.
         if (!snap.flags.signInReady || !hostIn(PASSWORD_HOSTS)) {
           await sleep(pollMs);
           continue;
         }
         await sleep(1000);
-        passwordProgress = "waiting_for_field";
         if (await typeInto(PASSWD_SELECTORS, PASSWORD_HOSTS, creds.password, true)) {
-          passwordProgress = "ready_to_submit";
           if (!(await clickAction(SUBMIT_SELECTORS, /^sign in$/i, PASSWORD_HOSTS))) throw new LoginError("button_not_found");
           passwordDone = true;
-          passwordProgress = "submitted";
           // A click is not proof of acceptance. Never automatically submit the password again.
           stage("password_submitted");
           await sleep(750);
@@ -412,7 +373,7 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
     }
 
     if (AUTH_HOSTS.includes(host) && snap.fields.otc && !codeEntered) {
-      if (clock.now() + 0 >= deadline) break;
+      if (clock.now() >= deadline) break;
       const waitMs = tracker.waitMs(clock.now());
       if (waitMs > 0) stage("totp_wait");
       let window: number;
@@ -438,6 +399,5 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
 
     await sleep(pollMs);
   }
-  diagnose("timeout");
-  throw new HumanActionRequired("unsupported_mfa_or_timeout");
+  throw new HumanActionRequired(lastPrompt === "passkey" ? "passkey_required" : "unsupported_mfa_or_timeout");
 }

@@ -3,6 +3,8 @@ import { apiRoutes } from "../src/api/routes";
 import { createApp, type App } from "../src/app";
 import { loadConfig } from "../src/core/config";
 import { Store } from "../src/core/db";
+import type { StreamMessage } from "../src/core/types";
+import { seedCatalog } from "./fixtures/catalog";
 
 let app: App;
 let server: ReturnType<typeof Bun.serve>;
@@ -31,6 +33,8 @@ beforeAll(async () => {
   // No network: pin a term and pretend the catalog is fresh so nothing syncs.
   store.updateSettings({ activeTerm: "120271" });
   store.db.query("INSERT INTO cat_meta (term, synced_at, courses) VALUES ('120271', ?, 0)").run(Date.now());
+  // Catalog and linked sections for the plan routes, so course detail never fetches.
+  await seedCatalog(store);
   app = await createApp(loadConfig({ REGISTRATION_MODE: "simulated", NODE_ENV: "test" }), { store });
   // Simulated mode never polls Banner, but block outbound calls anyway.
   app.services.terms = async () => [{ code: "120271", description: "Spring 2027" }];
@@ -102,4 +106,91 @@ test("bad input is rejected with a readable error", async () => {
   expect(bad.status).toBe(400);
   expect(bad.json.error).toContain("5 digit");
   expect((await call("PATCH", "/api/wanted/1", { swapDropCrn: "41234" })).status).toBe(403);
+});
+
+test("schedule planner: plans, courses, generate, target", async () => {
+  const frames: StreamMessage[] = [];
+  const unsubscribe = app.services.bus.subscribe(message => frames.push(message));
+  try {
+    const listed = await call("GET", "/api/plans?term=120271");
+    expect(listed.status).toBe(200);
+    expect(listed.json.map((p: any) => p.name)).toEqual(["Plan 1"]);
+    const planId = listed.json[0].id;
+
+    // Plans: create, sorted by position, limits and validation.
+    const second = await call("POST", "/api/plans", { term: "120271", name: "Backup plan" });
+    expect(second.status).toBe(201);
+    expect((await call("GET", "/api/plans?term=120271")).json.map((p: any) => p.name)).toEqual(["Plan 1", "Backup plan"]);
+    expect((await call("POST", "/api/plans", { term: "120271", name: "  " })).status).toBe(400);
+    expect((await call("PATCH", `/api/plans/${second.json.id}`, { name: "Renamed", sort: "gaps", openOnly: true })).json).toMatchObject({
+      name: "Renamed",
+      sort: "gaps",
+      openOnly: true,
+    });
+    expect((await call("PATCH", `/api/plans/${planId}`, { sort: "nope" })).status).toBe(400);
+    expect((await call("PATCH", `/api/plans/${planId}`, { breaks: [{ days: ["M"], start: "13:00", end: "12:00" }] })).status).toBe(400);
+    expect((await call("PATCH", `/api/plans/${planId}`, { breaks: [{ days: ["X"], start: "12:00", end: "13:00" }] })).status).toBe(400);
+    expect((await call("DELETE", `/api/plans/${second.json.id}`)).status).toBe(200);
+    expect((await call("PATCH", `/api/plans/${second.json.id}`, { name: "x" })).status).toBe(404);
+    expect(frames.some(frame => frame.type === "plans" && frame.term === "120271")).toBe(true);
+
+    // Courses.
+    let plan = (await call("POST", `/api/plans/${planId}/courses`, { subject: "cs", number: "374" })).json;
+    plan = (await call("POST", `/api/plans/${planId}/courses`, { subject: "MATH", number: "241" })).json;
+    expect(plan.courses.map((c: any) => [c.subject, c.number, c.title])).toEqual([
+      ["CS", "374", "Introduction to Algorithms & Models of Computation"],
+      ["MATH", "241", "Calculus III"],
+    ]);
+    expect((await call("POST", `/api/plans/${planId}/courses`, { subject: "MATH", number: "241" })).status).toBe(409);
+    expect((await call("POST", `/api/plans/${planId}/courses`, { subject: "MATH", number: "2" })).status).toBe(400);
+    const cs374 = plan.courses[0].id;
+    expect((await call("PATCH", `/api/plans/${planId}/courses/${cs374}`, { excludedCrns: ["123"] })).status).toBe(400);
+    expect((await call("PATCH", `/api/plans/${planId}/courses/${cs374}`, { locked: [] })).status).toBe(400);
+    expect((await call("PATCH", `/api/plans/${planId}/courses/${cs374}`, { excludedCrns: ["65089"] })).json.courses[0].excludedCrns).toEqual([
+      "65089",
+    ]);
+    expect((await call("PATCH", `/api/plans/${planId}/courses/999`, { included: false })).status).toBe(404);
+
+    // Generate. CS 225 was registered by the first test: its R 11:00 lab blocks both CS 374 lectures.
+    const blocked = (await call("POST", `/api/plans/${planId}/generate`)).json;
+    expect(blocked.fixed.map((f: any) => f.crn)).toEqual(["31225", "59777"]);
+    expect(blocked.courses[0]).toMatchObject({ subject: "CS", number: "374", status: "no_options" });
+    expect(blocked.total).toBe(0);
+    await call("PATCH", `/api/plans/${planId}`, { ignoreRegistered: true });
+    const framesBefore = frames.length;
+    const generated = await call("POST", `/api/plans/${planId}/generate`);
+    expect(generated.status).toBe(200);
+    expect(generated.json.fixed).toEqual([]);
+    expect(generated.json.total).toBeGreaterThan(0);
+    expect(generated.json.courses.map((c: any) => c.status)).toEqual(["ok", "ok"]);
+    const best = generated.json.schedules[0];
+    expect(best.picks.map((p: any) => `${p.subject} ${p.number}`)).toEqual(["CS 374", "MATH 241"]);
+    expect(best.picks[0].crns).not.toContain("65089");
+    // Results come only in the response, not on the stream.
+    expect(frames.slice(framesBefore).some(frame => (frame as any).schedules)).toBe(false);
+
+    // Target: bad picks are refused, a valid one arms both courses and returns the whole watchlist.
+    expect((await call("POST", `/api/plans/${planId}/target`, { picks: [] })).status).toBe(400);
+    expect((await call("POST", `/api/plans/${planId}/target`, { picks: [best.picks[0]] })).status).toBe(400);
+    const framesBeforeTarget = frames.length;
+    const targeted = await call("POST", `/api/plans/${planId}/target`, { picks: best.picks });
+    expect(targeted.status).toBe(200);
+    expect(targeted.json.plan.target.picks).toEqual(best.picks);
+    const keys = targeted.json.wanted.map((w: any) => `${w.subject} ${w.number}`);
+    expect(keys).toEqual(expect.arrayContaining(["CS 225", "CS 374", "MATH 241"]));
+    for (const w of targeted.json.wanted.filter((w: any) => w.planId === planId)) {
+      expect(w.armed).toBe(true);
+      expect(w.bundles[0].crns).toEqual(best.picks.find((p: any) => p.subject === w.subject && p.number === w.number).crns);
+    }
+    const after = frames.slice(framesBeforeTarget).map(frame => frame.type);
+    expect(after).toContain("wanted");
+    expect(after).toContain("plans");
+
+    // Deleting the plan keeps the watchlist courses but clears their link.
+    expect((await call("DELETE", `/api/plans/${planId}`)).status).toBe(200);
+    const state = (await call("GET", "/api/state")).json;
+    expect(state.wanted.filter((w: any) => w.subject === "MATH").map((w: any) => w.planId)).toEqual([null]);
+  } finally {
+    unsubscribe();
+  }
 });

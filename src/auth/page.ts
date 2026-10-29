@@ -4,7 +4,7 @@
 
 import type { BrowserSession } from "./browser";
 
-export type ProbeName = "snapshot" | "markField" | "markAction" | "focusCheck" | "clearField" | "fieldFilled";
+export type ProbeName = "snapshot" | "markField" | "markAction" | "focusCheck" | "clearField" | "fieldFilled" | "cancelPasskey";
 
 function tagged(name: ProbeName, fn: string, args: unknown[]): string {
   return `/*uar:${name}*/(${fn}).apply(null, ${JSON.stringify(args)})`;
@@ -28,7 +28,6 @@ export type SignInPrompt =
   | "access_blocked"
   | "sign_in_error"
   | "sms_or_email_code"
-  | "push_approval"
   | "passkey";
 
 export interface PageSnapshot {
@@ -64,8 +63,8 @@ export const ACTION_SELECTORS = ['button', "a", '[role="button"]', 'input[type="
 
 // Shared page-side helpers, inlined into each probe.
 const HELPERS = `
-  const visible = el => {
-    if (!el || el.disabled || el.getClientRects().length === 0) return false;
+  const rendered = el => {
+    if (!el || el.getClientRects().length === 0) return false;
     for (let node = el; node; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (node.hidden || node.getAttribute('aria-hidden') === 'true' || style.display === 'none' ||
@@ -73,6 +72,7 @@ const HELPERS = `
     }
     return true;
   };
+  const visible = el => Boolean(el && !el.disabled && rendered(el));
   const firstVisible = selectors => {
     for (const selector of selectors) for (const el of document.querySelectorAll(selector)) if (visible(el)) return el;
     return null;
@@ -86,7 +86,7 @@ const SNAPSHOT_FN = `function (sel) {
   const passwd = firstVisible(sel.passwd);
   const loginfmt = firstVisible(sel.loginfmt);
   const otc = firstVisible(sel.otc);
-  // Only return fixed categories, never the body text or challenge contents.
+  // Classify unsupported prompts without exporting their body text.
   let prompt = 'unrecognized';
   const captcha = Array.from(document.querySelectorAll('iframe[src*="captcha" i], iframe[title*="captcha" i], [data-sitekey]')).some(visible);
   if (captcha || /prove you.re (?:not a robot|human)|verify (?:that )?you.re human|help us beat the robots|enter the characters you see/i.test(text)) prompt = 'captcha';
@@ -95,7 +95,6 @@ const SNAPSHOT_FN = `function (sel) {
   else if (/more information required|keep your account secure|your organization needs more information|set up (?:your )?security info/i.test(text)) prompt = 'security_info_required';
   else if (/sorry, but we.re having trouble signing you in|something went wrong|AADSTS[0-9]{5,}/i.test(text)) prompt = 'sign_in_error';
   else if (otc && /we(?:.ve| have)? (?:sent|texted|emailed) (?:you )?(?:a |the )?(?:verification |security )?code|enter (?:the )?code (?:we|that we) (?:sent|texted|emailed)|code (?:sent|texted|emailed) to (?:your |the )?(?:email|phone)/i.test(text)) prompt = 'sms_or_email_code';
-  else if (/approve (?:the )?sign.?in request|check your (?:microsoft )?authenticator app|we.ve sent a notification|open your authenticator app/i.test(text)) prompt = 'push_approval';
   else if (/sign in with (?:a )?passkey|face, fingerprint, pin or security key|insert your security key/i.test(text)) prompt = 'passkey';
   const actions = [];
   for (const selector of sel.action) for (const el of document.querySelectorAll(selector)) {
@@ -172,6 +171,26 @@ const FIELD_FILLED_FN = `function (mark) {
   return Boolean(el && el.value && el.value.length > 0);
 }`;
 
+// Browser-owned FIDO prompts can intercept native input. Only this guarded Back cancellation
+// uses DOM dispatch. Credential entry and factor submissions remain native.
+const CANCEL_PASSKEY_FN = `function (sel) {
+  ${HELPERS}
+  if (location.protocol !== 'https:' || location.port || location.username || location.password ||
+      !['login.microsoft.com', 'login.microsoftonline.com'].includes(location.hostname) ||
+      !/\\/fido\\/get\\/?$/i.test(location.pathname)) return false;
+  const heading = document.querySelector('#loginHeader');
+  if (!visible(heading) || !/^face, fingerprint, pin or security key$/i.test((heading.innerText || '').trim())) return false;
+  const back = document.querySelector('#idBtn_Back');
+  if (!back || back.tagName !== 'BUTTON' || back.type !== 'button' || !visible(back) || back.closest('[inert]') ||
+      back.getAttribute('aria-disabled') === 'true' || !/^back$/i.test(label(back))) return false;
+  for (const selector of sel.upn.concat(sel.loginfmt, sel.passwd, sel.otc)) {
+    if (Array.from(document.querySelectorAll(selector)).some(rendered)) return false;
+  }
+  if (Array.from(document.querySelectorAll('[role="button"][data-value="PhoneAppOTP"]')).some(rendered)) return false;
+  back.click();
+  return true;
+}`;
+
 const nonce = () => Math.random().toString(36).slice(2, 10);
 
 const SELECTOR_SET = {
@@ -223,4 +242,9 @@ export function clearField(session: BrowserSession, mark: string): Promise<boole
 
 export function fieldFilled(session: BrowserSession, mark: string): Promise<boolean> {
   return safeEval(session, tagged("fieldFilled", FIELD_FILLED_FN, [mark]), false);
+}
+
+/** Cancel only the verified Microsoft FIDO waiting screen, never a sign-in or factor submission. */
+export function cancelPasskey(session: BrowserSession): Promise<boolean> {
+  return safeEval(session, tagged("cancelPasskey", CANCEL_PASSKEY_FN, [SELECTOR_SET]), false);
 }

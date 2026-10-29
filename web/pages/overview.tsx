@@ -1,5 +1,6 @@
 import {
   ArrowDown,
+  CalendarRange,
   ArrowUp,
   Ellipsis,
   GripVertical,
@@ -64,6 +65,7 @@ function Cell({ label, children, className }: { label: string; children: React.R
 
 function StatusRow({ now }: { now: number }) {
   const status = useStore(s => s.status)!;
+  const fromBanner = useStore(s => s.settings?.ticketSource === "banner" && s.settings.ticketCheckedTerm === s.settings.activeTerm);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -136,7 +138,10 @@ function StatusRow({ now }: { now: number }) {
           {ticketAt && ticketAt > now ? (
             <>
               <span className="font-mono tabular-nums">{countdown(ticketAt, now)}</span>
-              <span className="text-xs text-fg-muted">{formatDateTime(ticketAt)}</span>
+              <span className="text-xs text-fg-muted">
+                {formatDateTime(ticketAt)}
+                {fromBanner && " from Banner"}
+              </span>
             </>
           ) : ticketAt ? (
             <span className="text-fg-muted">Window open</span>
@@ -388,6 +393,15 @@ function WatchRow({
           <span className="font-mono text-sm font-medium text-fg">{code}</span>
           {course.kind === "any" && (
             <span className="rounded-full border border-border-strong px-1.5 text-[0.6875rem] text-fg-muted">Any</span>
+          )}
+          {course.planId != null && (
+            <span
+              title="Targeted from a plan"
+              className="inline-flex items-center gap-1 self-center rounded-full border border-[#10365f] px-1.5 text-[0.6875rem] leading-4 text-[#52a8ff]"
+            >
+              <CalendarRange className="size-3" aria-hidden />
+              Plan
+            </span>
           )}
         </span>
         <span className="block truncate text-[0.8125rem] text-fg-muted">{course.title}</span>

@@ -38,8 +38,6 @@ function pageSession(text: string, options: { codeField?: boolean; captcha?: boo
 
 describe("page-side prompt classification", () => {
   test.each([
-    ["Approve sign in request", "push_approval"],
-    ["We've sent a notification to your mobile device", "push_approval"],
     ["More information required", "security_info_required"],
     ["Keep your account secure", "security_info_required"],
     ["Your password has expired", "password_change_required"],

@@ -14,6 +14,7 @@ import type { SeatInfo, SessionState, Settings, SystemStatus } from "../core/typ
 import { courseForCrn } from "../catalog/store";
 import { AnonymousSeatSource, BANNER_BASE, MEP_CODE, looksLikeLogin, parseEnrollmentInfo, type FetchLike } from "./enrollment";
 import { installInterceptor, type AuthorizedBatch, type InstalledInterceptor } from "./interceptor";
+import { parseTicket, type TicketParse } from "./ticket";
 import type { RegistrationModel } from "./guard";
 import {
   BannerSessionError,
@@ -77,6 +78,20 @@ const REGISTRATION_PAGE_EXPR = `(() => {
   return { terms: copy(b.terms), multiTerm: copy(b.multiTerm), summaryModels: copy(b.summaryModels) };
 })()`;
 
+export const PREPARE_REGISTRATION_PATH = `${SSB_PATH}/prepareRegistration/prepareRegistration`;
+
+const TICKET_READY_EXPR = `(() => {
+  const t = (document.body && document.body.innerText) || '';
+  return /time\\s*ticket|registration\\s+(time|window|period|appointment)/i.test(t) && /\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{4}-\\d{2}-\\d{2}|[A-Z][a-z]{2,8}\\.?\\s+\\d{1,2},?\\s+\\d{4}|no\\s+(registration\\s+)?time\\s*ticket|not\\s+have/i.test(t);
+})()`;
+
+/** Visible page text, capped. Stays in memory only long enough to parse the dates out. */
+const TICKET_TEXT_EXPR = `(async () => {
+  await new Promise(r => setTimeout(r, 500)); // let late sections finish rendering
+  const t = (document.body && document.body.innerText) || '';
+  return t.length > 200000 ? t.slice(0, 200000) : t;
+})()`;
+
 /** Page-side fetch. Args travel as JSON data; nothing secret is ever included. */
 function inPageFetchExpr(args: { url: string; method: string; form?: Record<string, string>; json?: unknown; headers?: Record<string, string>; max: number }): string {
   return `(async (a) => {
@@ -116,6 +131,11 @@ export class BannerSessionManager implements SessionManager {
   private disposed = false;
   private blockedTotal = 0;
   private lastStrategies: ScheduleStrategy[] = [];
+  private readingTicket = false;
+  private batchPending = false;
+  private pageOps = 0;
+  private ticketDone: Promise<void> | null = null;
+  private blockContext: "ticket" | null = null;
   private readonly tracker: TotpWindowTracker;
   private readonly fetchImpl: FetchLike;
 
@@ -188,8 +208,10 @@ export class BannerSessionManager implements SessionManager {
   // ---------- lifecycle ----------
 
   async ensureWarm(term: string): Promise<void> {
-    await this.warmBase();
-    await this.selectTerm(term);
+    await this.pageOp(async () => {
+      await this.warmBase();
+      await this.selectTerm(term);
+    });
   }
 
   /** Log in (single flight) without choosing a term. */
@@ -234,12 +256,15 @@ export class BannerSessionManager implements SessionManager {
     try {
       this.interceptor = await installInterceptor(browser, () => this.authorized, info => {
         this.blockedTotal++;
+        // Requests the Prepare for Registration page makes on its own are blocked too, but they are
+        // the page's doing, not the app's, so they are reported without the alarm.
+        const ticketPage = this.blockContext === "ticket";
         this.deps.events.emit({
           kind: "session_error",
-          severity: "critical",
-          title: "Blocked a Banner write",
+          severity: ticketPage ? "warning" : "critical",
+          title: ticketPage ? "Blocked a request from the Prepare for Registration page" : "Blocked a Banner write",
           detail: `${info.method} ${info.url}`,
-          payload: { reason: "write_blocked", method: info.method, url: info.url },
+          payload: { reason: "write_blocked", method: info.method, url: info.url, context: this.blockContext },
         });
       });
     } catch {
@@ -252,8 +277,6 @@ export class BannerSessionManager implements SessionManager {
         clock: this.deps.clock,
         tracker: this.tracker,
         timeoutMs: this.deps.loginTimeoutMs,
-        // LoginDiagnostic explicitly selects safe categories/booleans. Never log a page snapshot.
-        onDiagnostic: diagnostic => console.warn("Login diagnostic", JSON.stringify(diagnostic)),
         onStage: (stage: LoginStage) => {
           this.stage = stage;
           this.deps.events.emit({ kind: "login_stage", severity: "info", title: `Login: ${stage}`, payload: { stage } });
@@ -354,6 +377,11 @@ export class BannerSessionManager implements SessionManager {
   /** Lightweight authenticated GET. A lost session re-logs in quietly (subject to backoff). */
   async keepalive(): Promise<boolean> {
     if (this.current !== "warm") return false;
+    // A ticket read is using the tab and proves the session is alive. Check again next round.
+    if (this.readingTicket) {
+      this.scheduleKeepalive();
+      return true;
+    }
     const term = this.activeTerm ?? this.deps.settings().activeTerm ?? "";
     try {
       await this.inPageFetch(CALENDAR_PATH);
@@ -433,8 +461,10 @@ export class BannerSessionManager implements SessionManager {
   // ---------- reads ----------
 
   async eligibility(term: string): Promise<Eligibility> {
-    await this.warmBase();
-    return this.selectTerm(term);
+    return this.pageOp(async () => {
+      await this.warmBase();
+      return this.selectTerm(term);
+    });
   }
 
   /**
@@ -446,6 +476,10 @@ export class BannerSessionManager implements SessionManager {
    * Anything that does not line up throws "schedule_unreadable". Never returns a partial schedule.
    */
   async readScheduleDetailed(term: string): Promise<ScheduleRead> {
+    return this.pageOp(() => this.readScheduleInner(term));
+  }
+
+  private async readScheduleInner(term: string): Promise<ScheduleRead> {
     await this.warmBase();
     // term/search once per session (cached), then a fresh render of the page: the summary is rendered
     // server-side for the session's selected term, and parseRegistrationSummary checks it is this term.
@@ -581,6 +615,89 @@ export class BannerSessionManager implements SessionManager {
     return report;
   }
 
+  /** Registration work waits for a ticket read to finish, since both use the one browser tab. */
+  private async ticketIdle(): Promise<void> {
+    while (this.ticketDone) await this.ticketDone.catch(() => {});
+  }
+
+  /**
+   * Run registration-page work. It waits out a ticket read, then counts itself as in flight (in the same
+   * tick, so a ticket read cannot start in between) until it settles.
+   */
+  private async pageOp<T>(fn: () => Promise<T>): Promise<T> {
+    await this.ticketIdle();
+    this.pageOps++;
+    try {
+      return await fn();
+    } finally {
+      this.pageOps--;
+    }
+  }
+
+  /** True while readTicket has the browser on the Prepare for Registration page. */
+  ticketReading(): boolean {
+    return this.readingTicket;
+  }
+
+  /**
+   * The registration time ticket for a term, read the way a student sees it: term/search in preReg
+   * mode (the same read-only call the Prepare for Registration term picker makes), then the Prepare
+   * for Registration page. Only the parsed dates leave this method. The page text is never logged.
+   * Afterwards the registration term selection is forgotten, so the next registration read re-selects it.
+   */
+  async readTicket(term: string): Promise<TicketParse> {
+    // Claim the browser in this tick: no await before the claim, so registration work cannot slip in.
+    if (this.authorized || this.batchPending) throw new BannerSessionError("batch_in_flight");
+    if (this.readingTicket) throw new BannerSessionError("ticket_read_in_flight");
+    if (this.pageOps > 0) throw new BannerSessionError("session_busy");
+    this.readingTicket = true;
+    let release!: () => void;
+    this.ticketDone = new Promise<void>(resolve => (release = resolve));
+    const blockedBefore = this.blockedTotal;
+    try {
+      await this.warmBase();
+      this.blockContext = "ticket";
+      const res = await this.inPageFetch(`${SSB_PATH}/term/search?mode=preReg`, {
+        method: "POST",
+        form: { term, studyPath: "", studyPathText: "", startDatepicker: "", endDatepicker: "", uniqueSessionId: this.uniqueSessionId },
+      });
+      if (res.status !== 200) throw new BannerSessionError("term_search_failed");
+      // The registration page token is replaced by this page's, so registration must re-select its term.
+      this.activeTerm = null;
+      this.termEligibility.clear();
+      const browser = this.requireBrowser();
+      try {
+        await browser.navigate(`${BANNER_ORIGIN}${PREPARE_REGISTRATION_PATH}`);
+      } catch {
+        // fall through to the content wait
+      }
+      if (new URL(browser.url() || "about:blank").hostname !== new URL(BANNER_ORIGIN).hostname) {
+        await this.dropSession("login_required");
+        throw new BannerSessionError("login_required");
+      }
+      // The ticket section loads after the page. Wait for a ticket label or a "no ticket" message.
+      await browser.waitFor(TICKET_READY_EXPR, 15_000);
+      let text = "";
+      try {
+        text = (await browser.evaluate<string>(TICKET_TEXT_EXPR)) ?? "";
+      } catch {
+        text = "";
+      }
+      if (looksLikeLogin(text)) {
+        await this.dropSession("login_required");
+        throw new BannerSessionError("login_required");
+      }
+      const parsed = parseTicket(text);
+      if (parsed.status === "unreadable" && this.blockedTotal > blockedBefore) return { status: "unreadable" };
+      return parsed;
+    } finally {
+      this.blockContext = null;
+      this.readingTicket = false;
+      this.ticketDone = null;
+      release();
+    }
+  }
+
   // ---------- API objects ----------
 
   /** Read-only API. Built as a fresh object so it structurally carries no write method. */
@@ -610,15 +727,25 @@ export class BannerSessionManager implements SessionManager {
     return {
       ...this.readApi(),
       withAuthorizedBatch: async (batch, fn) => {
-        if (this.authorized) throw new BannerSessionError("batch_in_flight");
-        this.authorized = { term: batch.term, addCrns: [...batch.addCrns], dropCrn: batch.dropCrn };
+        if (this.authorized || this.batchPending) throw new BannerSessionError("batch_in_flight");
+        this.batchPending = true; // readTicket refuses to start from here on
         try {
+          await this.ticketIdle();
+          // A ticket read before this batch left Banner on Prepare for Registration. Select the term
+          // again so the batch runs against the registration page for this term.
+          if (this.activeTerm !== batch.term) {
+            const e = await this.selectTerm(batch.term);
+            if (!e.allowed) throw new BannerSessionError("term_not_open");
+          }
+          this.authorized = { term: batch.term, addCrns: [...batch.addCrns], dropCrn: batch.dropCrn };
           return await fn();
         } finally {
           this.authorized = null;
+          this.batchPending = false;
         }
       },
       addCrnItems: async (term, crns): Promise<AddItemRow[]> => {
+        if (this.readingTicket) throw new BannerSessionError("ticket_read_in_flight");
         const res = await this.inPageFetch(`${SSB_PATH}/classRegistration/addCRNRegistrationItems`, { method: "POST", form: { crnList: crns.join(","), term } });
         const rows = parseAddItems(res.body);
         if (!rows) throw new BannerSessionError("add_items_unparseable");
@@ -631,6 +758,7 @@ export class BannerSessionManager implements SessionManager {
         return models;
       },
       submitBatch: async (models): Promise<SubmitRow[]> => {
+        if (this.readingTicket) throw new BannerSessionError("ticket_read_in_flight");
         const res = await this.inPageFetch(`${SSB_PATH}/classRegistration/submitRegistration/batch`, {
           method: "POST",
           json: { create: [], update: models, destroy: [], uniqueSessionId: this.uniqueSessionId },

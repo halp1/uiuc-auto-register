@@ -2,6 +2,7 @@ import { useSyncExternalStore, type MouseEvent } from "react";
 
 export type RouteMatch =
   | { name: "overview" }
+  | { name: "plan"; id: number | null }
   | { name: "search"; q: string }
   | { name: "course"; term: string; subject: string; number: string }
   | { name: "activity" }
@@ -70,6 +71,10 @@ export function match(href: string): RouteMatch {
   if (parts[0] === "search" && parts.length === 1) return { name: "search", q: url.searchParams.get("q") ?? "" };
   if (parts[0] === "course" && parts.length === 4)
     return { name: "course", term: parts[1]!, subject: parts[2]!.toUpperCase(), number: parts[3]! };
+  if (parts[0] === "plan" && parts.length === 1) {
+    const id = Number(url.searchParams.get("id"));
+    return { name: "plan", id: Number.isInteger(id) && id > 0 ? id : null };
+  }
   if (parts[0] === "activity" && parts.length === 1) return { name: "activity" };
   if (parts[0] === "settings" && parts.length === 1) return { name: "settings" };
   return { name: "notfound" };

@@ -46,8 +46,6 @@ export class WebViewSession implements BrowserSession {
             type: "chrome",
             url: false,
             ...(opts.chromePath ? { path: opts.chromePath } : {}),
-            // Bun ignores Chromium stderr by default, hiding container sandbox/startup errors.
-            stderr: "inherit",
           };
     this.view = new Bun.WebView({
       backend,

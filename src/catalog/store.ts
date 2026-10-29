@@ -149,6 +149,27 @@ export function courseForCrn(store: Store, term: string, crn: string): { subject
   return row ? { subject: row.subject, number: row.number, section: row.section } : null;
 }
 
+/** Stored sections by CRN (only CRNs the catalog knows). */
+export function sectionsByCrn(store: Store, term: string, crns: string[]): Map<string, CatalogSection & { subject: string; number: string }> {
+  const out = new Map<string, CatalogSection & { subject: string; number: string }>();
+  const query = store.db.query("SELECT * FROM cat_sections WHERE term = ? AND crn = ?");
+  for (const crn of new Set(crns)) {
+    const row = query.get(term, crn) as Row | null;
+    if (!row) continue;
+    out.set(crn, {
+      crn: row.crn,
+      subject: row.subject,
+      number: row.number,
+      section: row.section,
+      type: row.type,
+      typeName: row.type_name,
+      partOfTerm: row.part_of_term,
+      meetings: JSON.parse(row.meetings) as Meeting[],
+    });
+  }
+  return out;
+}
+
 export function storedLinkedOptions(store: Store, term: string, crns: string[]): Record<string, string[][]> {
   const out: Record<string, string[][]> = {};
   const query = store.db.query("SELECT options FROM linked_options WHERE term = ? AND crn = ?");

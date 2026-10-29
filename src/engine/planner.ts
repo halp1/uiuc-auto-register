@@ -1,6 +1,7 @@
 // Pure bundle logic: which bundles are fully open, and candidate bundles for "any valid combination".
 
 import type { AnyFilters, Bundle, BundleState, CourseDetail, Meeting, SeatInfo, Section, WantedCourse } from "../core/types";
+import { minutes, sectionsConflict } from "./schedule";
 
 export type SeatLookup = (crn: string) => Pick<SeatInfo, "available"> | null | undefined;
 
@@ -30,12 +31,6 @@ export function openBundles(
 
 // ---------- "any valid combination" ----------
 
-function minutes(hhmm: string | null): number | null {
-  if (!hhmm) return null;
-  const match = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
-  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
-}
-
 function meetingExcluded(meeting: Meeting, filters: AnyFilters): boolean {
   if (filters.excludeDays.some(day => meeting.days.includes(day))) return true;
   const start = minutes(meeting.start);
@@ -58,20 +53,6 @@ function meetingExcluded(meeting: Meeting, filters: AnyFilters): boolean {
 /** True when any meeting of the section violates the filters. */
 export function sectionExcluded(section: Pick<Section, "meetings">, filters: AnyFilters): boolean {
   return section.meetings.some(meeting => meetingExcluded(meeting, filters));
-}
-
-function meetingsOverlap(a: Meeting, b: Meeting): boolean {
-  if (![...a.days].some(day => b.days.includes(day))) return false;
-  const as = minutes(a.start);
-  const ae = minutes(a.end);
-  const bs = minutes(b.start);
-  const be = minutes(b.end);
-  if (as === null || ae === null || bs === null || be === null) return false;
-  return as < be && bs < ae;
-}
-
-function sectionsConflict(a: Section, b: Section): boolean {
-  return a.meetings.some(ma => b.meetings.some(mb => meetingsOverlap(ma, mb)));
 }
 
 const TYPE_PREFERENCE = ["LEC", "LCD", "ONL", "OLC", "SEM", "STU", "LBD", "LAB", "DIS", "QZ", "PR"];

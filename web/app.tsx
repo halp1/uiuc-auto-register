@@ -7,6 +7,7 @@ import { reload, useStore } from "@/lib/store";
 import { ActivityPage } from "@/pages/activity";
 import { CoursePage } from "@/pages/course";
 import { OverviewPage } from "@/pages/overview";
+import { PlanPage } from "@/pages/plan";
 import { SearchPage } from "@/pages/search";
 import { SettingsPage } from "@/pages/settings";
 
@@ -66,6 +67,9 @@ export function App() {
       case "overview":
         page = <OverviewPage />;
         break;
+      case "plan":
+        page = <PlanPage id={route.id} />;
+        break;
       case "search":
         page = <SearchPage initialQuery={route.q} />;
         break;
@@ -82,5 +86,9 @@ export function App() {
         page = <NotFound />;
     }
 
-  return <Shell fill={ready && route.name === "overview"}>{page}</Shell>;
+  return (
+    <Shell fill={ready && (route.name === "overview" || route.name === "plan")} wide={route.name === "plan"}>
+      {page}
+    </Shell>
+  );
 }

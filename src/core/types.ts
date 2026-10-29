@@ -49,6 +49,7 @@ export interface WantedCourse {
   createdAt: number;
   updatedAt: number;
   bundles: Bundle[];
+  planId: number | null; // set when a plan targeted this course
 }
 
 export interface SeatInfo {
@@ -124,6 +125,10 @@ export interface Settings {
   overnightSlow: boolean;
   activeTerm: string | null;
   ticketAt: string | null; // ISO timestamp of registration window opening
+  ticketAuto: boolean; // keep ticketAt in sync with Banner's Prepare for Registration page
+  ticketSource: "manual" | "banner" | null; // where ticketAt came from (server-managed)
+  ticketCheckedAt: number | null; // last Banner check (server-managed)
+  ticketCheckedTerm: string | null; // term of the last Banner check (server-managed)
   liveEnabled: boolean;
   liveTerm: string | null;
   swapsUnlocked: boolean;
@@ -141,7 +146,30 @@ export type PublicSettings = Omit<Settings, "discordToken" | "vapidPrivateKey"> 
   discordTokenHint: string | null; // e.g. "4f2a" (last 4) when set
 };
 
-export type SettingsPatch = Partial<Omit<Settings, "vapidPublicKey" | "vapidPrivateKey" | "liveEnabled" | "liveTerm" | "swapsUnlocked">>;
+export type SettingsPatch = Partial<
+  Omit<Settings, "vapidPublicKey" | "vapidPrivateKey" | "liveEnabled" | "liveTerm" | "swapsUnlocked" | "ticketSource" | "ticketCheckedAt" | "ticketCheckedTerm">
+>;
+
+/** One registration window from Banner's Prepare for Registration page. ISO timestamps. */
+export interface TicketWindow {
+  start: string;
+  end: string | null;
+}
+
+/** What the Prepare for Registration page said about the time ticket. */
+export type TicketParse =
+  | { status: "found"; windows: TicketWindow[] }
+  | { status: "none" } // Banner says there is no time ticket
+  | { status: "unreadable" };
+
+export interface TicketDetectResult {
+  term: string;
+  found: boolean;
+  ticketAt: string | null; // the window that applies now or next
+  windows: TicketWindow[];
+  applied: boolean; // settings.ticketAt was updated
+  checkedAt: number;
+}
 
 export type ApprovalState = "pending" | "approved" | "skipped" | "expired" | "auto";
 
@@ -265,7 +293,85 @@ export type StreamMessage =
   | { type: "seats"; seats: SeatInfo[] }
   | { type: "wanted"; wanted: WantedCourse[] }
   | { type: "approvals"; approvals: Approval[] }
-  | { type: "settings"; settings: PublicSettings };
+  | { type: "settings"; settings: PublicSettings }
+  | { type: "plans"; term: string; plans: Plan[] };
+
+// Schedule planner
+export interface PlanBreak {
+  days: Day[];
+  start: string; // "HH:MM" 24h
+  end: string;
+}
+
+export type PlanSort = "open" | "days" | "start" | "end" | "gaps";
+
+export interface PlanCourse {
+  id: number;
+  planId: number;
+  subject: string;
+  number: string;
+  title: string;
+  included: boolean;
+  excludedCrns: string[];
+  locked: string[] | null; // one exact bundle, or null
+  backups: boolean; // add fitting alternates as lower ranked bundles when targeting
+  position: number;
+}
+
+export interface PlanPick {
+  subject: string;
+  number: string;
+  crns: string[];
+}
+
+export interface PlanTarget {
+  at: number;
+  picks: PlanPick[];
+}
+
+export interface Plan {
+  id: number;
+  term: string;
+  name: string;
+  position: number;
+  breaks: PlanBreak[];
+  ignoreRegistered: boolean;
+  openOnly: boolean;
+  sort: PlanSort;
+  target: PlanTarget | null;
+  courses: PlanCourse[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PlanScheduleStats {
+  days: number; // distinct days with timed meetings
+  start: string | null; // earliest timed meeting start
+  end: string | null; // latest timed meeting end
+  gapMin: number; // idle minutes between meetings, summed over days
+  closed: number; // sections known to have no open seat
+  minSeats: number | null; // lowest known availability
+}
+
+export interface PlanSchedule {
+  key: string; // sorted CRNs joined by ","
+  picks: PlanPick[];
+  stats: PlanScheduleStats;
+}
+
+export type PlanCourseStatus = "ok" | "no_options" | "not_offered" | "registered" | "excluded";
+
+export type PlanSection = Section & { subject: string; number: string };
+
+export interface PlanGenerateResult {
+  schedules: PlanSchedule[]; // sorted, at most 200
+  total: number; // valid schedules found before slicing
+  truncated: boolean; // search stopped at the cap or time budget
+  courses: { subject: string; number: string; options: number; status: PlanCourseStatus }[];
+  fixed: { crn: string; subject: string | null; number: string | null }[];
+  sections: Record<string, PlanSection>; // every referenced CRN, for the calendar
+  generatedAt: number;
+}
 
 export interface Snapshot {
   status: SystemStatus;

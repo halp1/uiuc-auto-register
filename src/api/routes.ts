@@ -1,6 +1,22 @@
 import { SCHEDULE_READER } from "../banner/registrar/types";
 import { isTermCode, termLabel } from "../core/terms";
-import { NOTIFY_EVENTS, type AnyFilters, type Day, type Settings, type SettingsPatch, type Snapshot, type StreamMessage } from "../core/types";
+import { PLAN_LIMITS } from "../core/db";
+import {
+  NOTIFY_EVENTS,
+  type AnyFilters,
+  type Day,
+  type Plan,
+  type PlanBreak,
+  type PlanCourse,
+  type PlanPick,
+  type PlanSort,
+  type Settings,
+  type SettingsPatch,
+  type Snapshot,
+  type StreamMessage,
+} from "../core/types";
+import { PlanError } from "../engine/plans";
+import { TicketDetectError } from "../engine/ticket-detect";
 import type { AppServices } from "./services";
 
 export class HttpError extends Error {
@@ -60,6 +76,67 @@ function validFilters(value: unknown): AnyFilters {
   return { excludeDays, excludeTimes, excludeInstructors };
 }
 
+const PLAN_SORTS: PlanSort[] = ["open", "days", "start", "end", "gaps"];
+const SUBJECT = /^[A-Za-z]{2,5}$/;
+const NUMBER = /^\d{3}[A-Za-z]?$/;
+
+function validPlanName(value: unknown): string {
+  const name = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!name || name.length > 60) throw new HttpError(400, "Plan names are 1 to 60 characters.");
+  return name;
+}
+
+function validBreaks(value: unknown): PlanBreak[] {
+  if (!Array.isArray(value)) throw new HttpError(400, "Breaks must be a list.");
+  if (value.length > PLAN_LIMITS.breaks) throw new HttpError(400, `A plan can have up to ${PLAN_LIMITS.breaks} breaks.`);
+  return value.map(raw => {
+    const days = Array.isArray(raw?.days) ? [...new Set(raw.days.map(String))] : [];
+    if (!days.length || !days.every(day => DAYS.includes(day as Day))) throw new HttpError(400, "Each break needs at least one day.");
+    if (!HHMM.test(String(raw?.start)) || !HHMM.test(String(raw?.end)) || raw.start >= raw.end)
+      throw new HttpError(400, "Each break needs a start before its end.");
+    return { days: DAYS.filter(day => days.includes(day)), start: String(raw.start), end: String(raw.end) };
+  });
+}
+
+function validPlanPatch(raw: any): Partial<Pick<Plan, "name" | "breaks" | "ignoreRegistered" | "openOnly" | "sort">> {
+  const patch: Partial<Pick<Plan, "name" | "breaks" | "ignoreRegistered" | "openOnly" | "sort">> = {};
+  const b = raw ?? {};
+  if (b.name !== undefined) patch.name = validPlanName(b.name);
+  if (b.breaks !== undefined) patch.breaks = validBreaks(b.breaks);
+  if (b.ignoreRegistered !== undefined) patch.ignoreRegistered = Boolean(b.ignoreRegistered);
+  if (b.openOnly !== undefined) patch.openOnly = Boolean(b.openOnly);
+  if (b.sort !== undefined) {
+    if (!PLAN_SORTS.includes(b.sort)) throw new HttpError(400, "Unknown sort.");
+    patch.sort = b.sort;
+  }
+  return patch;
+}
+
+function validPlanCoursePatch(raw: any): Partial<Pick<PlanCourse, "included" | "excludedCrns" | "locked" | "backups">> {
+  const patch: Partial<Pick<PlanCourse, "included" | "excludedCrns" | "locked" | "backups">> = {};
+  const b = raw ?? {};
+  if (b.included !== undefined) patch.included = Boolean(b.included);
+  if (b.backups !== undefined) patch.backups = Boolean(b.backups);
+  if (b.excludedCrns !== undefined) {
+    if (!Array.isArray(b.excludedCrns)) throw new HttpError(400, "Excluded CRNs must be a list.");
+    const crns = [...new Set(b.excludedCrns.map(String))] as string[];
+    if (crns.length > PLAN_LIMITS.excludedCrns) throw new HttpError(400, `Exclude up to ${PLAN_LIMITS.excludedCrns} CRNs.`);
+    if (!crns.every(crn => CRN.test(crn))) throw new HttpError(400, "CRNs are 5 digit numbers.");
+    patch.excludedCrns = crns;
+  }
+  if (b.locked !== undefined) patch.locked = b.locked === null ? null : validCrns(b.locked);
+  return patch;
+}
+
+function validPicks(value: unknown): PlanPick[] {
+  if (!Array.isArray(value) || value.length === 0) throw new HttpError(400, "Pick a schedule first.");
+  if (value.length > PLAN_LIMITS.coursesPerPlan) throw new HttpError(400, "Too many courses.");
+  return value.map(raw => {
+    if (!SUBJECT.test(String(raw?.subject ?? "")) || !NUMBER.test(String(raw?.number ?? ""))) throw new HttpError(400, "That is not a valid course.");
+    return { subject: String(raw.subject).toUpperCase(), number: String(raw.number).toUpperCase(), crns: validCrns(raw.crns) };
+  });
+}
+
 function validSettingsPatch(raw: any, current: Settings): Partial<Settings> {
   const patch: Partial<Settings> = {};
   const p = (raw ?? {}) as SettingsPatch;
@@ -94,7 +171,13 @@ function validSettingsPatch(raw: any, current: Settings): Partial<Settings> {
   if (p.ticketAt !== undefined) {
     if (p.ticketAt !== null && Number.isNaN(Date.parse(p.ticketAt))) throw new HttpError(400, "Time ticket is not a valid date.");
     patch.ticketAt = p.ticketAt === null ? null : new Date(p.ticketAt).toISOString();
+    // A ticket typed by hand stays put: automatic detection turns off unless it is turned on in the same save.
+    if (patch.ticketAt !== current.ticketAt) {
+      patch.ticketSource = patch.ticketAt ? "manual" : null;
+      patch.ticketAuto = false;
+    }
   }
+  if (p.ticketAuto !== undefined) patch.ticketAuto = Boolean(p.ticketAuto);
   if (p.discordToken !== undefined) {
     if (p.discordToken !== null && (typeof p.discordToken !== "string" || p.discordToken.trim().length < 30))
       throw new HttpError(400, "That does not look like a Discord bot token.");
@@ -225,7 +308,7 @@ function wrap(handler: Handler): Handler {
       if (refused) return json({ error: refused }, 403);
       return await handler(req);
     } catch (error) {
-      if (error instanceof HttpError) return json({ error: error.message }, error.status);
+      if (error instanceof HttpError || error instanceof PlanError || error instanceof TicketDetectError) return json({ error: error.message }, error.status);
       console.error("api error", req.method, new URL(req.url).pathname, error);
       return json({ error: "Something went wrong on the server. Check the logs." }, 500);
     }
@@ -262,6 +345,18 @@ export function apiRoutes(s: AppServices) {
     publishWanted();
     s.poller.kick();
     s.orchestrator.evaluate(reason);
+  };
+  const plan = (pid: number) => {
+    const p = s.store.getPlan(pid);
+    if (!p) throw new HttpError(404, "That plan no longer exists.");
+    return p;
+  };
+  const publishPlans = (term: string) => s.bus.publish({ type: "plans", term, plans: s.store.listPlans(term) });
+  /** Respond with the fresh plan and broadcast the term's plans. */
+  const planChanged = (pid: number) => {
+    const p = plan(pid);
+    publishPlans(p.term);
+    return json(p);
   };
 
   const r: Record<string, Handler | Record<string, Handler>> = {
@@ -414,6 +509,82 @@ export function apiRoutes(s: AppServices) {
       },
     },
 
+    "/api/plans": {
+      GET: req => {
+        const term = new URL(req.url).searchParams.get("term") ?? s.settings().activeTerm;
+        if (!term || !isTermCode(term)) throw new HttpError(400, "Pick a term first.");
+        return json(s.store.listPlans(term));
+      },
+      POST: async req => {
+        const b = await body(req);
+        if (!isTermCode(b.term)) throw new HttpError(400, "Unknown term.");
+        const name = validPlanName(b.name);
+        if (s.store.countPlans(b.term) >= PLAN_LIMITS.plansPerTerm)
+          throw new HttpError(409, `You can keep up to ${PLAN_LIMITS.plansPerTerm} plans per term.`);
+        const created = s.store.createPlan(b.term, name);
+        publishPlans(b.term);
+        return json(created, 201);
+      },
+    },
+    "/api/plans/:id": {
+      PATCH: async req => {
+        const p = plan(id(req.params.id));
+        const patch = validPlanPatch(await body(req));
+        s.store.updatePlan(p.id, patch);
+        return planChanged(p.id);
+      },
+      DELETE: req => {
+        const p = plan(id(req.params.id));
+        const linked = s.store.listWanted(p.term).some(course => course.planId === p.id);
+        s.store.deletePlan(p.id);
+        publishPlans(p.term);
+        if (linked) publishWanted();
+        return json({ ok: true });
+      },
+    },
+    "/api/plans/:id/courses": {
+      POST: async req => {
+        const p = plan(id(req.params.id));
+        const b = await body(req);
+        if (!SUBJECT.test(String(b.subject ?? "")) || !NUMBER.test(String(b.number ?? ""))) throw new HttpError(400, "That is not a valid course.");
+        const subject = String(b.subject).toUpperCase();
+        const number = String(b.number).toUpperCase();
+        if (p.courses.some(c => c.subject === subject && c.number === number)) throw new HttpError(409, `${subject} ${number} is already in this plan.`);
+        if (p.courses.length >= PLAN_LIMITS.coursesPerPlan) throw new HttpError(409, `A plan holds up to ${PLAN_LIMITS.coursesPerPlan} courses.`);
+        const title = await s.courseTitle(p.term, subject, number).catch(() => null);
+        if (title === null) throw new HttpError(404, `${subject} ${number} is not offered in ${termLabel(p.term)}.`);
+        s.store.addPlanCourse(p.id, { subject, number, title });
+        return planChanged(p.id);
+      },
+    },
+    "/api/plans/:id/courses/:cid": {
+      PATCH: async req => {
+        const p = plan(id(req.params.id));
+        const cid = id(req.params.cid);
+        if (!p.courses.some(c => c.id === cid)) throw new HttpError(404, "That course is not in this plan.");
+        s.store.updatePlanCourse(p.id, cid, validPlanCoursePatch(await body(req)));
+        return planChanged(p.id);
+      },
+      DELETE: req => {
+        const p = plan(id(req.params.id));
+        if (!s.store.deletePlanCourse(p.id, id(req.params.cid))) throw new HttpError(404, "That course is not in this plan.");
+        return planChanged(p.id);
+      },
+    },
+    "/api/plans/:id/generate": {
+      POST: async req => json(await s.planGenerate(plan(id(req.params.id)).id)),
+    },
+    "/api/plans/:id/target": {
+      POST: async req => {
+        const p = plan(id(req.params.id));
+        const { picks } = await body(req);
+        const result = await s.planTarget(p.id, validPicks(picks));
+        publishPlans(p.term);
+        afterWatchlistChange("plan_targeted");
+        return json(result);
+      },
+    },
+
     "/api/control/pause": {
       POST: () => {
         s.control.pauseAll("dashboard");
@@ -467,6 +638,15 @@ export function apiRoutes(s: AppServices) {
         if (s.config.mode === "simulated") throw new HttpError(409, "Rehearsal needs REGISTRATION_MODE=rehearsal or live in your .env file.");
         if (!s.config.hasCredentials) throw new HttpError(409, "Add your NetID, password, and TOTP secret to the .env file first.");
         return json(await s.rehearse(term));
+      },
+    },
+    "/api/ticket/detect": {
+      POST: async req => {
+        const { term } = await body<{ term: string }>(req);
+        if (!isTermCode(term)) throw new HttpError(400, "Unknown term.");
+        if (s.config.mode === "simulated") throw new HttpError(409, "Reading the time ticket needs REGISTRATION_MODE=rehearsal or live in your .env file.");
+        if (!s.config.hasCredentials) throw new HttpError(409, "Add your NetID, password, and TOTP secret to the .env file first.");
+        return json(await s.detectTicket(term));
       },
     },
     "/api/live": {

@@ -1,6 +1,6 @@
 // Interfaces between modules. Each module owner implements one side; src/index.ts wires them.
 
-import type { Approval, AppEvent, RegisterRequest, RegisterResult, SeatInfo, SessionState, Term } from "./types";
+import type { Approval, AppEvent, RegisterRequest, RegisterResult, SeatInfo, SessionState, Term, TicketParse } from "./types";
 
 /** Live seat counts for specific CRNs. */
 export interface SeatSource {
@@ -54,6 +54,8 @@ export interface SessionManager {
   pauseUntil(until: number | null): Promise<void>;
   /** Read currently registered CRNs for a term (read-only). */
   readSchedule(term: string): Promise<string[]>;
+  /** Read-only: the time ticket shown on Prepare for Registration for a term. */
+  readTicket(term: string): Promise<TicketParse>;
   /** Full read-only rehearsal of the live path. */
   rehearse(term: string, crns: string[]): Promise<RehearsalReport>;
   /** Authenticated seat source used as fallback when the anonymous endpoint stops working. */

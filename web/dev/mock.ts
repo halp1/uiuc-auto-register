@@ -7,6 +7,15 @@ import {
   type Bundle,
   type CourseDetail,
   type Meeting,
+  type Day,
+  type Plan,
+  type PlanBreak,
+  type PlanCourse,
+  type PlanGenerateResult,
+  type PlanPick,
+  type PlanSchedule,
+  type PlanSection,
+  type PlanSort,
   type PublicSettings,
   type SearchHit,
   type SeatInfo,
@@ -122,6 +131,25 @@ const courses: CourseSeed[] = [
   },
   {
     subject: "CS",
+    number: "173",
+    title: "Discrete Structures",
+    credits: "3",
+    description: "Discrete mathematical structures frequently encountered in the study of computer science.",
+    sections: [
+      ["39311", "AL1", "LEC", "TR", "12:30", "13:45", "Lincoln Hall", "Theater", "Fleck, M", 6, 350],
+      ["39312", "AL2", "LEC", "TR", "15:30", "16:45", "Foellinger Auditorium", "", "Mattox, B", 0, 350],
+      ["39320", "ADA", "DIS", "F", "09:00", "09:50", "Siebel Center", "1302", "Staff", 3, 30],
+      ["39321", "ADB", "DIS", "F", "11:00", "11:50", "Siebel Center", "1302", "Staff", 0, 30],
+      ["39322", "ADC", "DIS", "F", "14:00", "14:50", "Siebel Center", "1304", "Staff", 5, 30],
+      ["39323", "ADD", "DIS", "R", "17:00", "17:50", "Siebel Center", "1304", "Staff", 1, 30],
+    ],
+    linked: {
+      "39311": [["39320"], ["39321"], ["39322"]],
+      "39312": [["39322"], ["39323"]],
+    },
+  },
+  {
+    subject: "CS",
     number: "233",
     title: "Computer Architecture",
     credits: "4",
@@ -175,6 +203,7 @@ let wanted: WantedCourse[] = [
     kind: "bundles",
     filters: noFilters,
     swapDropCrn: null,
+    planId: null,
     state: "watching",
     createdAt: now - 3 * 86400_000,
     updatedAt: now - 2 * min,
@@ -191,6 +220,7 @@ let wanted: WantedCourse[] = [
     kind: "any",
     filters: { excludeDays: ["F"], excludeTimes: [{ start: "08:00", end: "09:00" }], excludeInstructors: [] },
     swapDropCrn: null,
+    planId: null,
     state: "watching",
     createdAt: now - 3 * 86400_000,
     updatedAt: now - 60 * min,
@@ -207,6 +237,7 @@ let wanted: WantedCourse[] = [
     kind: "bundles",
     filters: noFilters,
     swapDropCrn: null,
+    planId: null,
     state: "watching",
     createdAt: now - 2 * 86400_000,
     updatedAt: now - 5 * 60 * min,
@@ -223,6 +254,7 @@ let wanted: WantedCourse[] = [
     kind: "bundles",
     filters: noFilters,
     swapDropCrn: null,
+    planId: null,
     state: "blocked",
     createdAt: now - 2 * 86400_000,
     updatedAt: now - 20 * min,
@@ -239,6 +271,7 @@ let wanted: WantedCourse[] = [
     kind: "bundles",
     filters: noFilters,
     swapDropCrn: null,
+    planId: null,
     state: "registered",
     createdAt: now - 4 * 86400_000,
     updatedAt: now - 26 * 60 * min,
@@ -280,6 +313,10 @@ let settings: PublicSettings = {
   overnightSlow: true,
   activeTerm: TERM,
   ticketAt: new Date(now + 2 * 86400_000 + 3 * 3600_000).toISOString(),
+  ticketAuto: true,
+  ticketSource: "banner",
+  ticketCheckedAt: now - 47 * min,
+  ticketCheckedTerm: TERM,
   liveEnabled: false,
   liveTerm: null,
   swapsUnlocked: false,
@@ -466,6 +503,7 @@ export async function mockRequest(method: string, path: string, body: any): Prom
   let m: RegExpExecArray | null;
 
   if (key === "GET /api/state") return snapshot();
+  if (p.startsWith("/api/plans")) return planRequest(method, url, body);
   if (key === "GET /api/events") {
     const before = Number(url.searchParams.get("before") ?? Infinity);
     const limit = Number(url.searchParams.get("limit") ?? 50);
@@ -522,6 +560,7 @@ export async function mockRequest(method: string, path: string, body: any): Prom
       kind: body.kind,
       filters: body.filters ?? noFilters,
       swapDropCrn: null,
+      planId: null,
       state: "watching",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -623,10 +662,37 @@ export async function mockRequest(method: string, path: string, body: any): Prom
     push({ type: "status", status: clone(status) });
     return clone(settings);
   }
+  if (key === "POST /api/ticket/detect") {
+    if (status.mode === "simulated") throw new MockError("Ticket detection needs Rehearsal or Live mode.");
+    await wait(1400);
+    // A ticket a few days out, on the hour, Central time.
+    const at = new Date(Date.now() + 3 * 86400_000);
+    at.setUTCMinutes(0, 0, 0);
+    const ticketAt = at.toISOString();
+    const checkedAt = Date.now();
+    const applied = settings.ticketAuto;
+    settings = {
+      ...settings,
+      ticketCheckedAt: checkedAt,
+      ticketCheckedTerm: body.term,
+      ...(applied ? { ticketAt, ticketSource: "banner" as const } : {}),
+    };
+    push({ type: "settings", settings: clone(settings) });
+    if (applied) {
+      status = { ...status, ticket: { at: ticketAt, phase: "waiting" } };
+      push({ type: "status", status: clone(status) });
+    }
+    return { term: body.term, found: true, ticketAt, windows: [{ start: ticketAt, end: null }], applied, checkedAt };
+  }
   if (key === "PUT /api/settings") {
     if (body.pollIntervalSec !== undefined && body.pollIntervalSec < 10) throw new MockError("Polling interval must be at least 10 seconds.");
     const { discordToken, ...rest } = body;
+    const manualTicket = body.ticketAt !== undefined && body.ticketAt !== settings.ticketAt;
     settings = { ...settings, ...rest };
+    if (manualTicket) {
+      settings.ticketSource = body.ticketAt ? "manual" : null;
+      if (body.ticketAuto !== true) settings.ticketAuto = false;
+    }
     if (discordToken !== undefined) settings.discordTokenHint = discordToken ? String(discordToken).slice(-4) : null;
     push({ type: "settings", settings: clone(settings) });
     if (body.ticketAt !== undefined) {
@@ -703,4 +769,315 @@ export function startMockStream(apply: (m: StreamMessage) => void) {
     push({ type: "seats", seats: [next] });
     addEvent({ kind: "seat_changed", severity: "info", title: `Seats on ${crn} ${s.available} to ${available}`, crns: [crn] });
   }, 7000);
+}
+
+// ---------- schedule planner ----------
+
+let planSeq = 0;
+let planCourseSeq = 0;
+const plans: Plan[] = [];
+
+function newPlan(term: string, name: string): Plan {
+  const t = Date.now();
+  const plan: Plan = {
+    id: ++planSeq,
+    term,
+    name,
+    position: plans.filter(x => x.term === term).length,
+    breaks: [],
+    ignoreRegistered: false,
+    openOnly: false,
+    sort: "open",
+    target: null,
+    courses: [],
+    createdAt: t,
+    updatedAt: t,
+  };
+  plans.push(plan);
+  return plan;
+}
+
+function planCourse(plan: Plan, subject: string, number: string): PlanCourse {
+  const c = courses.find(x => x.subject === subject && x.number === number);
+  return {
+    id: ++planCourseSeq,
+    planId: plan.id,
+    subject,
+    number,
+    title: c?.title ?? "",
+    included: true,
+    excludedCrns: [],
+    locked: null,
+    backups: true,
+    position: plan.courses.length,
+  };
+}
+
+{
+  const p1 = newPlan(TERM, "Plan 1");
+  p1.courses = [planCourse(p1, "CS", "225"), planCourse(p1, "CS", "173"), planCourse(p1, "MATH", "241")];
+  p1.breaks = [{ days: ["M", "W", "F"], start: "12:00", end: "13:00" }];
+  const p2 = newPlan(TERM, "Light Fridays");
+  p2.courses = [planCourse(p2, "CS", "225"), planCourse(p2, "CS", "374")];
+}
+
+const pushPlans = (term: string) =>
+  push({ type: "plans", term, plans: clone(plans.filter(x => x.term === term).sort((a, b) => a.position - b.position)) });
+
+const minutesOf = (hhmm: string) => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+};
+
+function overlaps(a: Section, b: Section) {
+  for (const x of a.meetings)
+    for (const y of b.meetings) {
+      if (!x.start || !x.end || !y.start || !y.end) continue;
+      if (![...x.days].some(d => y.days.includes(d))) continue;
+      if (minutesOf(x.start) < minutesOf(y.end) && minutesOf(y.start) < minutesOf(x.end)) return true;
+    }
+  return false;
+}
+
+function hitsBreak(s: Section, breaks: PlanBreak[]) {
+  return s.meetings.some(m =>
+    breaks.some(
+      b =>
+        m.start &&
+        m.end &&
+        [...m.days].some(d => b.days.includes(d as Day)) &&
+        minutesOf(m.start) < minutesOf(b.end) &&
+        minutesOf(b.start) < minutesOf(m.end),
+    ),
+  );
+}
+
+const FIXED = ["40121"]; // the simulated schedule's registered STAT 400
+
+function generate(plan: Plan): PlanGenerateResult {
+  const sections: Record<string, PlanSection> = {};
+  const sec = (crn: string): PlanSection | undefined => {
+    if (sections[crn]) return sections[crn];
+    for (const c of courses) {
+      const seed = c.sections.find(x => x[0] === crn);
+      if (seed) return (sections[crn] = { ...toSection(seed), subject: c.subject, number: c.number });
+    }
+    return undefined;
+  };
+  const fixed = plan.ignoreRegistered ? [] : FIXED.map(crn => ({ crn, subject: "STAT", number: "400" }));
+  const fixedSecs = fixed.map(f => sec(f.crn)!).filter(Boolean);
+  const results: PlanGenerateResult["courses"] = [];
+  const optionLists: { pc: PlanCourse; options: string[][] }[] = [];
+  for (const pc of plan.courses) {
+    const seed = courses.find(c => c.subject === pc.subject && c.number === pc.number);
+    if (!pc.included) {
+      results.push({ subject: pc.subject, number: pc.number, options: 0, status: "excluded" });
+      continue;
+    }
+    if (!seed) {
+      results.push({ subject: pc.subject, number: pc.number, options: 0, status: "not_offered" });
+      continue;
+    }
+    if (wanted.some(w => w.term === plan.term && w.subject === pc.subject && w.number === pc.number && w.state === "registered")) {
+      results.push({ subject: pc.subject, number: pc.number, options: 0, status: "registered" });
+      continue;
+    }
+    let options: string[][] = Object.keys(seed.linked).length
+      ? Object.entries(seed.linked).flatMap(([lec, opts]) => opts.map(o => [lec, ...o]))
+      : seed.sections.map(x => [x[0]]);
+    if (pc.locked) options = [pc.locked];
+    options = options.filter(o =>
+      o.every(crn => {
+        const s = sec(crn);
+        return s && !pc.excludedCrns.includes(crn) && !hitsBreak(s, plan.breaks) && !fixedSecs.some(f => overlaps(f, s));
+      }),
+    );
+    for (const o of options) for (const crn of o) sec(crn);
+    results.push({ subject: pc.subject, number: pc.number, options: options.length, status: options.length ? "ok" : "no_options" });
+    if (options.length) optionLists.push({ pc, options });
+  }
+  const schedules: PlanSchedule[] = [];
+  const blocked = results.some(r => r.status === "no_options");
+  const walk = (i: number, picked: { pc: PlanCourse; crns: string[] }[]) => {
+    if (i === optionLists.length) {
+      const crns = picked.flatMap(p => p.crns);
+      const secs = crns.map(c => sections[c]!);
+      const timed = secs.flatMap(s => s.meetings).filter(m => m.start && m.end);
+      const byDay: Record<string, [number, number][]> = {};
+      for (const m of timed) for (const d of m.days) (byDay[d] ??= []).push([minutesOf(m.start!), minutesOf(m.end!)]);
+      let gap = 0;
+      for (const list of Object.values(byDay)) {
+        list.sort((a, b) => a[0] - b[0]);
+        for (let k = 1; k < list.length; k++) gap += Math.max(0, list[k]![0] - list[k - 1]![1]);
+      }
+      const starts = timed.map(m => m.start!).sort();
+      const ends = timed.map(m => m.end!).sort();
+      const avail = secs.map(s => seats.get(s.crn)?.available ?? null).filter((x): x is number => x !== null);
+      schedules.push({
+        key: [...crns].sort().join(","),
+        picks: picked.map(p => ({ subject: p.pc.subject, number: p.pc.number, crns: p.crns })),
+        stats: {
+          days: Object.keys(byDay).length,
+          start: starts[0] ?? null,
+          end: ends[ends.length - 1] ?? null,
+          gapMin: gap,
+          closed: avail.filter(a => a <= 0).length,
+          minSeats: avail.length ? Math.min(...avail) : null,
+        },
+      });
+      return;
+    }
+    const { pc, options } = optionLists[i]!;
+    for (const o of options) {
+      const s = o.map(c => sections[c]!);
+      if (picked.some(p => p.crns.some(c => s.some(x => overlaps(x, sections[c]!))))) continue;
+      walk(i + 1, [...picked, { pc, crns: o }]);
+    }
+  };
+  if (!blocked && optionLists.length) walk(0, []);
+  let list = plan.openOnly ? schedules.filter(x => x.stats.closed === 0) : schedules;
+  const cmp: Record<PlanSort, (a: PlanSchedule, b: PlanSchedule) => number> = {
+    open: (a, b) => a.stats.closed - b.stats.closed || (b.stats.minSeats ?? 0) - (a.stats.minSeats ?? 0),
+    days: (a, b) => a.stats.days - b.stats.days,
+    start: (a, b) => (b.stats.start ?? "").localeCompare(a.stats.start ?? ""),
+    end: (a, b) => (a.stats.end ?? "").localeCompare(b.stats.end ?? ""),
+    gaps: (a, b) => a.stats.gapMin - b.stats.gapMin,
+  };
+  list = list.sort((a, b) => cmp[plan.sort](a, b) || a.stats.gapMin - b.stats.gapMin || a.key.localeCompare(b.key));
+  for (const f of fixed) sec(f.crn);
+  return {
+    schedules: list.slice(0, 200),
+    total: list.length,
+    truncated: false,
+    courses: results,
+    fixed,
+    sections,
+    generatedAt: Date.now(),
+  };
+}
+
+function findPlan(id: number) {
+  const plan = plans.find(x => x.id === id);
+  if (!plan) throw new MockError("That plan no longer exists.");
+  return plan;
+}
+
+async function planRequest(method: string, url: URL, body: any): Promise<unknown> {
+  const p = url.pathname;
+  let m: RegExpExecArray | null;
+  if (method === "GET" && p === "/api/plans") {
+    const term = url.searchParams.get("term") ?? TERM;
+    if (!plans.some(x => x.term === term)) newPlan(term, "Plan 1");
+    return clone(plans.filter(x => x.term === term).sort((a, b) => a.position - b.position));
+  }
+  if (method === "POST" && p === "/api/plans") {
+    if (plans.filter(x => x.term === body.term).length >= 10) throw new MockError("A term can have at most 10 plans.");
+    const plan = newPlan(body.term, String(body.name).trim() || "Untitled");
+    pushPlans(plan.term);
+    return clone(plan);
+  }
+  if ((m = /^\/api\/plans\/(\d+)$/.exec(p))) {
+    const plan = findPlan(Number(m[1]));
+    if (method === "DELETE") {
+      plans.splice(plans.indexOf(plan), 1);
+      for (const w of wanted) if (w.planId === plan.id) w.planId = null;
+      pushPlans(plan.term);
+      pushWanted();
+      return { ok: true };
+    }
+    if (method === "PATCH") {
+      if (body.name !== undefined && !String(body.name).trim()) throw new MockError("Give the plan a name.");
+      Object.assign(plan, body, { updatedAt: Date.now() });
+      pushPlans(plan.term);
+      return clone(plan);
+    }
+  }
+  if ((m = /^\/api\/plans\/(\d+)\/courses$/.exec(p)) && method === "POST") {
+    const plan = findPlan(Number(m[1]));
+    if (plan.courses.length >= 12) throw new MockError("A plan can hold at most 12 courses.");
+    if (plan.courses.some(c => c.subject === body.subject && c.number === body.number))
+      throw new MockError(`${body.subject} ${body.number} is already in this plan.`);
+    if (!courses.some(c => c.subject === body.subject && c.number === body.number))
+      throw new MockError(`${body.subject} ${body.number} is not offered this term.`);
+    plan.courses.push(planCourse(plan, body.subject, body.number));
+    plan.updatedAt = Date.now();
+    pushPlans(plan.term);
+    return clone(plan);
+  }
+  if ((m = /^\/api\/plans\/(\d+)\/courses\/(\d+)$/.exec(p))) {
+    const plan = findPlan(Number(m[1]));
+    const pc = plan.courses.find(c => c.id === Number(m![2]));
+    if (!pc) throw new MockError("That course is no longer in the plan.");
+    if (method === "DELETE") plan.courses = plan.courses.filter(c => c !== pc);
+    else Object.assign(pc, body);
+    plan.updatedAt = Date.now();
+    pushPlans(plan.term);
+    return clone(plan);
+  }
+  if ((m = /^\/api\/plans\/(\d+)\/generate$/.exec(p)) && method === "POST") {
+    await wait(500);
+    return generate(findPlan(Number(m[1])));
+  }
+  if ((m = /^\/api\/plans\/(\d+)\/target$/.exec(p)) && method === "POST") {
+    const plan = findPlan(Number(m[1]));
+    const picks: PlanPick[] = body.picks;
+    if (plan.term !== settings.activeTerm)
+      throw new MockError("Targeting only works for the active term.");
+    const busy = wanted.find(
+      w => picks.some(pk => pk.subject === w.subject && pk.number === w.number) && w.bundles.some(b => b.state === "registering" || b.state === "pending_approval"),
+    );
+    if (busy) throw new MockError(`${busy.subject} ${busy.number} has a registration in progress. Resolve it first.`);
+    const result = generate(plan);
+    const changed: WantedCourse[] = [];
+    for (const pk of picks) {
+      let w = wanted.find(x => x.term === plan.term && x.subject === pk.subject && x.number === pk.number);
+      if (!w) {
+        const id = Math.max(0, ...wanted.map(x => x.id)) + 1;
+        w = {
+          id,
+          term: plan.term,
+          subject: pk.subject,
+          number: pk.number,
+          title: courses.find(c => c.subject === pk.subject && c.number === pk.number)?.title ?? "",
+          priority: wanted.length,
+          armed: true,
+          kind: "bundles",
+          filters: noFilters,
+          swapDropCrn: null,
+          planId: null,
+          state: "watching",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          bundles: [],
+        };
+        wanted.push(w);
+      }
+      const pc = plan.courses.find(c => c.subject === pk.subject && c.number === pk.number);
+      const others = picks.filter(x => x !== pk).flatMap(x => x.crns);
+      const backups =
+        pc?.backups === false
+          ? []
+          : result.schedules
+              .flatMap(s => s.picks.filter(x => x.subject === pk.subject && x.number === pk.number && x.crns.join() !== pk.crns.join()))
+              .filter(x => x.crns.every(c => !others.some(o => overlaps(result.sections[c]!, result.sections[o]!))))
+              .map(x => x.crns)
+              .filter((x, i, all) => all.findIndex(y => y.join() === x.join()) === i)
+              .slice(0, 20);
+      const id = w.id;
+      w.bundles = [mkBundle(id, 0, pk.crns), ...backups.map((crns, i) => mkBundle(id, i + 1, crns, "watching", { generated: true }))];
+      w.kind = "bundles";
+      w.armed = true;
+      w.planId = plan.id;
+      w.updatedAt = Date.now();
+      changed.push(clone(w));
+    }
+    for (const w of wanted)
+      if (w.planId === plan.id && !picks.some(pk => pk.subject === w.subject && pk.number === w.number)) w.armed = false;
+    plan.target = { at: Date.now(), picks };
+    pushPlans(plan.term);
+    pushWanted();
+    addEvent({ kind: "control", severity: "info", title: `Targeted ${plan.name}`, crns: picks.flatMap(x => x.crns) });
+    return { plan: clone(plan), wanted: changed };
+  }
+  throw new MockError(`Mock has no plan handler for ${method} ${p}`);
 }

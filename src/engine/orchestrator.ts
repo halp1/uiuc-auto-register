@@ -17,8 +17,9 @@ import type {
   WantedCourse,
 } from "../core/types";
 import { classifyMessages } from "../banner/classify";
-import { courseForCrn } from "../catalog/store";
+import { courseForCrn, sectionsByCrn } from "../catalog/store";
 import { hasClosedCrn, isFullyOpen, openBundles, type SeatLookup } from "./planner";
+import { planConflicts } from "./schedule";
 
 export const REMIND_AFTER_MS = 5 * 60 * 1000;
 export const TRANSIENT_COOLDOWN_MS = 30_000;
@@ -302,8 +303,12 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
       if (this.stopped) break;
       if (!course.armed || course.state !== "watching") continue;
       if (course.bundles.some(bundle => store.pendingApprovalForBundle(bundle.id))) continue;
+      const blockers = course.planId !== null ? this.planBlockers(course) : null;
       const candidates = openBundles(course, seats, ["watching", "open"]).filter(
-        bundle => !this.suppressed.has(bundle.id) && (this.cooldownUntil.get(bundle.id) ?? 0) <= now,
+        bundle =>
+          !this.suppressed.has(bundle.id) &&
+          (this.cooldownUntil.get(bundle.id) ?? 0) <= now &&
+          !(blockers && this.conflictsWithBlockers(course, bundle, blockers)),
       );
       if (!candidates.length) continue;
 
@@ -342,6 +347,30 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
       }
     }
     this.finish(changed);
+  }
+
+  /**
+   * CRNs a plan-targeted course must fit around: the registered bundles of other same-term courses
+   * and the latest known schedule. Read fresh so a registration earlier in this pass counts.
+   */
+  private planBlockers(course: WantedCourse): string[] {
+    const { store } = this.deps;
+    const crns = new Set<string>(store.latestSchedule(course.term)?.crns ?? []);
+    for (const other of store.listWanted(course.term)) {
+      if (other.id === course.id || other.state !== "registered") continue;
+      for (const bundle of other.bundles) if (bundle.state === "registered") bundle.crns.forEach(crn => crns.add(crn));
+    }
+    if (course.swapDropCrn && this.deps.settings().swapsUnlocked) crns.delete(course.swapDropCrn);
+    return [...crns];
+  }
+
+  /** Filter only: a plan bundle that would clash with something already on the schedule is skipped. */
+  private conflictsWithBlockers(course: WantedCourse, bundle: Bundle, blockers: string[]): boolean {
+    const others = blockers.filter(crn => !bundle.crns.includes(crn));
+    if (!others.length) return false;
+    const known = sectionsByCrn(this.deps.store, course.term, [...bundle.crns, ...others]);
+    const pick = (crns: string[]) => crns.map(crn => known.get(crn)).filter((section): section is NonNullable<typeof section> => Boolean(section));
+    return planConflicts(pick(bundle.crns), pick(others)).length > 0;
   }
 
   private finish(changed: boolean): void {

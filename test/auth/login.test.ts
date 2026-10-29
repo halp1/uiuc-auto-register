@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HumanActionRequired, LoginError, login, type Credentials, type LoginDiagnostic } from "../../src/auth/login";
+import { HumanActionRequired, LoginError, login, type Credentials } from "../../src/auth/login";
 import { parseProbe } from "../../src/auth/page";
 import { totp, TotpWindowTracker } from "../../src/auth/totp";
 import { AutoClock, FakeBrowser, illinoisFlow, type FlowOptions, type PageName } from "./fake-browser";
@@ -145,7 +145,7 @@ describe("login", () => {
     expect(passwordTypedOn(browser).length).toBe(1);
   });
 
-  test("a password form without Sign in never types and diagnoses the readiness wait", async () => {
+  test("a password form without Sign in never types", async () => {
     const { clock, browser } = setup({
       override: {
         password: () => ({
@@ -155,14 +155,11 @@ describe("login", () => {
         }),
       },
     });
-    const diagnostics: LoginDiagnostic[] = [];
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
     expect(passwordTypedOn(browser)).toEqual([]);
-    expect(diagnostics.at(-1)).toMatchObject({ reason: "timeout", stage: "password", passwordProgress: "waiting_for_sign_in", signInReady: false });
-    expect(diagnostics.some(d => d.reason === "waiting")).toBe(true);
   });
 
-  test("a read-only password field is distinguished from a missing Sign in action", async () => {
+  test("a read-only password field is never typed", async () => {
     const { clock, browser } = setup({
       override: {
         password: () => ({
@@ -172,44 +169,32 @@ describe("login", () => {
         }),
       },
     });
-    const diagnostics: LoginDiagnostic[] = [];
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
     expect(passwordTypedOn(browser)).toEqual([]);
-    expect(diagnostics.at(-1)).toMatchObject({ stage: "password", passwordProgress: "waiting_for_field", signInReady: true });
   });
 
-  test("a click without page progression is reported without resubmitting or leaking page content", async () => {
+  test("a submit without page progression never resubmits the password", async () => {
     let submissions = 0;
     const { clock, browser } = setup({
       override: {
         password: () => ({
-          url: "https://login.microsoftonline.com/common/login?private=hidden",
-          title: `${CREDS.netid} ${CREDS.password} ${SECRET}`,
+          url: "https://login.microsoftonline.com/common/login",
           fields: { passwd: {} },
-          actions: [
-            {
-              label: "Sign in",
-              kind: "submit",
-              onClick: () => {
-                submissions++;
-              },
+          actions: [{
+            label: "Sign in",
+            kind: "submit",
+            onClick: () => {
+              submissions++;
             },
-            { label: CREDS.netid, kind: "button", onClick: () => {} },
-          ],
+          }],
         }),
       },
     });
-    const diagnostics: LoginDiagnostic[] = [];
     const stages: string[] = [];
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d), onStage: s => stages.push(s) }))).toBe("unsupported_mfa_or_timeout");
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onStage: s => stages.push(s) }))).toBe("unsupported_mfa_or_timeout");
     expect(submissions).toBe(1);
     expect(passwordTypedOn(browser)).toHaveLength(1);
     expect(stages.at(-1)).toBe("password_submitted");
-    expect(diagnostics.at(-1)).toMatchObject({ reason: "timeout", page: "microsoft", stage: "password_submitted", passwordProgress: "submitted", passwordField: true });
-    const logged = JSON.stringify(diagnostics);
-    for (const privateValue of [CREDS.netid, CREDS.password, SECRET, "private=hidden", "login.microsoftonline.com"]) {
-      expect(logged).not.toContain(privateValue);
-    }
   });
 
   test("a delayed password response advances without a duplicate submission", async () => {
@@ -256,33 +241,17 @@ describe("login", () => {
     expect(browser.values.passwd).toBe("existing-content");
   });
 
-  test("persistent snapshot failures are counted without logging raw exceptions", async () => {
+  test("persistent page-probe failures time out without resubmitting credentials", async () => {
     const { clock, browser } = setup({
       override: {
         push: () => ({ url: "https://login.microsoftonline.com/common/SAS/ProcessAuth" }),
       },
     });
     browser.beforeProbe = (b, name) => {
-      if (name === "snapshot" && b.typed.some(t => t.field === "passwd")) throw new Error("private-error-content");
+      if (name === "snapshot" && b.typed.some(t => t.field === "passwd")) throw new Error("page unavailable");
     };
-    const diagnostics: LoginDiagnostic[] = [];
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
-    expect(diagnostics.at(-1)).toMatchObject({ reason: "timeout", page: "unavailable", passwordField: null, signInReady: null });
-    expect(diagnostics.at(-1)!.snapshotFailures).toBeGreaterThan(0);
-    expect(JSON.stringify(diagnostics)).not.toContain("private-error-content");
-  });
-
-  test("diagnostic observer failures never replace the login outcome", async () => {
-    const { clock, browser } = setup({
-      override: { push: () => ({ url: "https://login.microsoftonline.com/common/SAS/ProcessAuth" }) },
-    });
-    expect(await reason(login(browser, CREDS, {
-      clock,
-      timeoutMs: 20_000,
-      onDiagnostic: () => {
-        throw new Error("observer failed");
-      },
-    }))).toBe("unsupported_mfa_or_timeout");
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
+    expect(passwordTypedOn(browser)).toHaveLength(1);
   });
 
   test("TOTP is typed only on auth hosts", async () => {
@@ -329,7 +298,6 @@ describe("login", () => {
       override: {
         push: () => ({
           url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
-          prompt: "push_approval",
           actions: [{ label: "Use a different verification option", kind: "button", onClick: b => {
             otherWayClicks++;
             b.show(flow.pages.methods(b));
@@ -359,11 +327,9 @@ describe("login", () => {
         }),
       },
     });
-    const diagnostics: LoginDiagnostic[] = [];
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
     expect(methodClicks).toBe(0);
     expect(browser.typed.some(t => t.field === "otc")).toBe(false);
-    expect(diagnostics.at(-1)?.appCodeOptionAvailable).toBe(false);
   });
 
   test.each([
@@ -385,13 +351,11 @@ describe("login", () => {
         }),
       },
     });
-    const diagnostics: LoginDiagnostic[] = [];
-    const error = await login(browser, CREDS, { clock, onDiagnostic: d => diagnostics.push(d) }).catch(e => e);
+    const error = await login(browser, CREDS, { clock }).catch(e => e);
     expect(error).toBeInstanceOf(HumanActionRequired);
     expect(error.reason).toBe(expected);
     expect(clicks).toBe(0);
     expect(browser.typed.some(t => t.field === "otc")).toBe(false);
-    expect(diagnostics.at(-1)).toMatchObject({ reason: "blocked", prompt });
   });
 
   test.each([
@@ -426,6 +390,93 @@ describe("login", () => {
     });
     expect(await reason(login(browser, CREDS, { clock }))).toBe("unsupported_mfa_method");
     expect(browser.typed.some(t => t.field === "otc")).toBe(false);
+  });
+
+  test("leaves the observed FIDO page once and completes an available app-code alternative", async () => {
+    let backs = 0;
+    const { clock, browser, flow } = setup({ override: {
+      push: () => ({
+        url: "https://login.microsoft.com/tenant/fido/get",
+        prompt: "passkey",
+        actions: [{ label: "Back", kind: "back", onClick: b => {
+          backs++;
+          b.show(flow.pages.methods(b));
+        } }],
+      }),
+    } });
+    const nativeClick = browser.click.bind(browser);
+    browser.click = async selector => {
+      const marked = browser.marks.get(selector);
+      if (marked?.kind === "action" && marked.action.kind === "back" && /^back$/i.test(marked.action.label)) throw new Error("native FIDO Back input is intercepted");
+      await nativeClick(selector);
+    };
+    const stages: string[] = [];
+    await login(browser, CREDS, { clock, onStage: stage => stages.push(stage) });
+    expect(backs).toBe(1);
+    expect(browser.clicks).toContain("dom:#idBtn_Back");
+    expect(stages).toContain("passkey_fallback");
+    expect(stages.at(-1)).toBe("ready");
+    expect(passwordTypedOn(browser)).toHaveLength(1);
+    expect(browser.typed.filter(t => t.field === "otc")).toHaveLength(1);
+  });
+
+  test("a passkey Back button that makes no progress is never clicked twice", async () => {
+    let backs = 0;
+    const { clock, browser } = setup({ override: {
+      push: () => ({
+        url: "https://login.microsoft.com/tenant/fido/get",
+        prompt: "passkey",
+        actions: [{ label: "Back", kind: "back", onClick: () => { backs++; } }],
+      }),
+    } });
+    expect(await reason(login(browser, CREDS, { clock }))).toBe("passkey_required");
+    expect(backs).toBe(1);
+    expect(passwordTypedOn(browser)).toHaveLength(1);
+  });
+
+  test("returning to the password form after cancelling passkey does not resubmit credentials", async () => {
+    const { clock, browser, flow } = setup({ override: {
+      push: () => ({
+        url: "https://login.microsoft.com/tenant/fido/get",
+        prompt: "passkey",
+        actions: [{ label: "Back", kind: "back", onClick: b => b.show(flow.pages.password(b)) }],
+      }),
+    } });
+    expect(await reason(login(browser, CREDS, { clock }))).toBe("passkey_required");
+    expect(passwordTypedOn(browser)).toHaveLength(1);
+    expect(browser.typed.some(t => t.field === "otc")).toBe(false);
+  });
+
+  test("missing or mislabeled Back fails closed on the FIDO screen", async () => {
+    for (const label of ["Continue", "No"]) {
+      let clicks = 0;
+      const { clock, browser } = setup({ override: {
+        push: () => ({
+          url: "https://login.microsoft.com/tenant/fido/get",
+          prompt: "passkey",
+          actions: [{ label, kind: "back", onClick: () => { clicks++; } }],
+        }),
+      } });
+      expect(await reason(login(browser, CREDS, { clock }))).toBe("passkey_required");
+      expect(clicks).toBe(0);
+    }
+  });
+
+  test("does not leave a method picker just because it also lists a passkey", async () => {
+    let backs = 0;
+    const { clock, browser, flow } = setup({ override: {
+      push: () => ({
+        url: "https://login.microsoft.com/tenant/fido/get",
+        prompt: "passkey",
+        actions: [
+          { label: "Back", kind: "back", onClick: () => { backs++; } },
+          { label: "Use a verification code", kind: "button", onClick: b => b.show(flow.pages.otc(b)) },
+        ],
+      }),
+    } });
+    await login(browser, CREDS, { clock });
+    expect(backs).toBe(0);
+    expect(browser.typed.filter(t => t.field === "otc")).toHaveLength(1);
   });
 
   test("a TOTP window already used is not reused", async () => {

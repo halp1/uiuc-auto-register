@@ -129,4 +129,20 @@ describe("expandAny", () => {
     ];
     expect(sectionExcluded({ meetings: arranged }, { ...none, excludeTimes: [{ start: "00:00", end: "23:59" }] })).toBe(false);
   });
+
+  test("lecture and lab in different halves of the term may share a time slot", () => {
+    const section = (crn: string, type: string, sectionCode: string, partOfTerm: string): Section => ({
+      crn,
+      section: sectionCode,
+      type,
+      typeName: type,
+      partOfTerm,
+      seats: null,
+      meetings: [{ type, typeName: "", days: "M", start: "09:00", end: "09:50", building: null, room: null, instructors: [] }],
+    });
+    const halves = { sections: [section("10001", "LEC", "A1", "A"), section("10002", "LAB", "AL", "B")], linkedOptions: {} };
+    expect(expandAny(halves, none)).toEqual([["10001", "10002"]]);
+    const same = { sections: [section("10001", "LEC", "A1", "A"), section("10002", "LAB", "AL", "A")], linkedOptions: {} };
+    expect(expandAny(same, none)).toEqual([]);
+  });
 });

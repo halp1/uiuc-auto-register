@@ -6,6 +6,7 @@ const server = Bun.serve({
   development: true,
   routes: {
     "/": index,
+    "/plan": index,
     "/search": index,
     "/course/*": index,
     "/activity": index,

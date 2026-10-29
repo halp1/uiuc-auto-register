@@ -535,3 +535,67 @@ describe("with the poller", () => {
     expect(t.orchestrator.statusText()).toContain("CS 225: watching, 0 of 1 bundles open");
   });
 });
+
+describe("plan conflict filter", () => {
+  const insertSection = (store: Store, crn: string, subject: string, number: string, days: string, start: string, end: string, part = "1") =>
+    store.db
+      .query(
+        `INSERT INTO cat_sections (term, crn, subject, number, section, type, type_name, part_of_term, meetings)
+         VALUES (?, ?, ?, ?, ?, 'LEC', 'Lecture', ?, ?)`,
+      )
+      .run(T, crn, subject, number, crn, part, JSON.stringify([{ type: "LEC", typeName: "Lecture", days, start, end, building: null, room: null, instructors: [] }]));
+
+  function planned() {
+    const t = setup();
+    insertSection(t.store, LEC, "CS", "225", "MWF", "11:00", "11:50");
+    insertSection(t.store, LAB1, "CS", "225", "R", "11:00", "12:50");
+    insertSection(t.store, LAB2, "CS", "225", "R", "09:00", "10:50");
+    insertSection(t.store, "41234", "MATH", "241", "R", "11:30", "12:20");
+    const plan = t.store.createPlan(T, "Plan 1");
+    const course = t.want("CS", "225", [[LEC, LAB1], [LEC, LAB2]]);
+    t.store.setWantedPlan(course.id, plan.id);
+    for (const crn of [LEC, LAB1, LAB2]) t.sim.setSeats(T, crn, 2);
+    return { ...t, course, plan };
+  }
+
+  test("plan course skips an open bundle that clashes with the latest schedule", async () => {
+    const t = planned();
+    t.store.addScheduleSnapshot(T, ["41234", "52345"], "rehearsal");
+    await t.tick();
+    expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB2]]);
+    // Filter only: the skipped bundle keeps its normal state.
+    expect(t.store.getWanted(t.course.id)!.bundles[0]!.blockedReason).toBeNull();
+  });
+
+  test("plan course skips a bundle that clashes with another registered course", async () => {
+    const t = planned();
+    const math = t.want("MATH", "241", [["41234"]], false);
+    t.store.setBundleState(math.bundles[0]!.id, "registered");
+    t.store.setCourseState(math.id, "registered");
+    t.sim.setSeats(T, LAB2, 0);
+    await t.tick();
+    expect(t.registerCalls.length).toBe(0);
+    expect(t.bundles(t.course.id)).toEqual(["open", "watching"]);
+  });
+
+  test("courses without a plan are not filtered", async () => {
+    const t = planned();
+    t.store.setWantedPlan(t.course.id, null);
+    t.store.addScheduleSnapshot(T, ["41234"], "rehearsal");
+    await t.tick();
+    expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB1]]);
+  });
+
+  test("different halves of the term do not clash", async () => {
+    const t = setup();
+    insertSection(t.store, LEC, "CS", "225", "R", "11:00", "11:50", "A");
+    insertSection(t.store, "41234", "MATH", "241", "R", "11:00", "11:50", "B");
+    const plan = t.store.createPlan(T, "Plan 1");
+    const course = t.want("CS", "225", [[LEC]]);
+    t.store.setWantedPlan(course.id, plan.id);
+    t.store.addScheduleSnapshot(T, ["41234"], "rehearsal");
+    t.sim.setSeats(T, LEC, 2);
+    await t.tick();
+    expect(t.registerCalls.length).toBe(1);
+  });
+});

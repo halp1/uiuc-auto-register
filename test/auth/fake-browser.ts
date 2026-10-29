@@ -163,6 +163,18 @@ export class FakeBrowser implements BrowserSession {
         this.marks.set(mark, { kind: "action", action });
         return mark as T;
       }
+      case "cancelPasskey": {
+        const url = new URL(page.url);
+        if (url.protocol !== "https:" || url.port || url.username || url.password ||
+            !["login.microsoft.com", "login.microsoftonline.com"].includes(url.hostname) ||
+            !/\/fido\/get\/?$/i.test(url.pathname) || page.prompt !== "passkey" ||
+            Object.keys(fields).length || (page.actions ?? []).some(a => /^use a verification code$/i.test(a.label))) return false as T;
+        const back = (page.actions ?? []).find(a => a.kind === "back" && /^back$/i.test(a.label));
+        if (!back) return false as T;
+        this.clicks.push("dom:#idBtn_Back");
+        back.onClick(this);
+        return true as T;
+      }
       case "focusCheck": {
         const [mark, hosts] = probe.args as [string, string[]];
         const entry = this.marks.get(mark);

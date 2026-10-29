@@ -2,6 +2,7 @@ import { useRef, useSyncExternalStore } from "react";
 import type {
   AppEvent,
   Approval,
+  Plan,
   PublicSettings,
   SeatInfo,
   Snapshot,
@@ -27,6 +28,8 @@ export interface ClientState {
   loadError: string | null;
   /** crn key -> epoch ms when the client saw the seat count change (drives the row flash) */
   seatFlash: Record<string, number>;
+  /** term -> plans, loaded on demand by the planner and kept fresh by the stream */
+  plans: Record<string, Plan[]>;
 }
 
 const EVENT_CAP = 200;
@@ -42,6 +45,7 @@ let state: ClientState = {
   connection: "connecting",
   loadError: null,
   seatFlash: {},
+  plans: {},
 };
 
 const listeners = new Set<() => void>();
@@ -113,6 +117,10 @@ function applySnapshot(snapshot: Snapshot) {
   });
 }
 
+function sortPlans(list: Plan[]) {
+  return [...list].sort((a, b) => a.position - b.position || a.id - b.id);
+}
+
 function sortWanted(list: WantedCourse[]) {
   return [...list].sort((a, b) => a.priority - b.priority || a.id - b.id);
 }
@@ -144,6 +152,9 @@ export function apply(message: StreamMessage) {
     case "settings":
       set({ settings: message.settings });
       break;
+    case "plans":
+      set({ plans: { ...state.plans, [message.term]: sortPlans(message.plans) } });
+      break;
   }
 }
 
@@ -163,6 +174,17 @@ export const local = {
   },
   settings(settings: PublicSettings) {
     set({ settings });
+  },
+  plans(term: string, plans: Plan[]) {
+    set({ plans: { ...state.plans, [term]: sortPlans(plans) } });
+  },
+  upsertPlan(plan: Plan) {
+    const list = state.plans[plan.term] ?? [];
+    const exists = list.some(p => p.id === plan.id);
+    local.plans(plan.term, exists ? list.map(p => (p.id === plan.id ? plan : p)) : [...list, plan]);
+  },
+  removePlan(term: string, id: number) {
+    local.plans(term, (state.plans[term] ?? []).filter(p => p.id !== id));
   },
   globalPaused(paused: boolean) {
     if (!state.status) return;

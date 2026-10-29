@@ -309,3 +309,71 @@ describe("parsers", () => {
     ]);
   });
 });
+
+describe("readTicket", () => {
+  const PREP = "https://banner.apps.uillinois.edu/StudentRegistrationSSB/ssb/prepareRegistration/prepareRegistration";
+  function ticketManager(text: string, opts: { termSearchStatus?: number; landOn?: string } = {}) {
+    const store = new Store(":memory:");
+    const events = new Events(store, new Bus());
+    const bannerPage = { url: "https://banner.apps.uillinois.edu/StudentRegistrationSSB/ssb/classRegistration/classRegistration", syncToken: true };
+    const browser = new FakeBrowser((_b, url) => ({ url: opts.landOn ?? url, syncToken: true }));
+    browser.page = bannerPage;
+    const fetched: { url: string; method: string; form: any }[] = [];
+    browser.evaluateOther = (expr: string) => {
+      if (expr.includes("innerText") && expr.includes("200000")) return text;
+      if (expr.includes("window.bootstraps")) return { terms: "120271", multiTerm: false, summaryModels: [] };
+      const args = /\}\)\((\{[\s\S]*\})\)$/.exec(expr)?.[1];
+      const a = args ? JSON.parse(args) : { url: "" };
+      fetched.push({ url: a.url, method: a.method, form: a.form });
+      const reply = (status: number, body: string) => ({ status, url: String(a.url).split("?")[0], redirected: false, loginPage: false, contentType: "application/json", body });
+      if (String(a.url).includes("term/search")) return reply(opts.termSearchStatus ?? 200, '{"fwdURL":"/x"}');
+      if (String(a.url).includes("getRegistrationEvents")) return reply(200, "[]");
+      return reply(404, "");
+    };
+    const manager = new BannerSessionManager({ config: { ...loadConfig({ NODE_ENV: "test" }), mode: "live" }, events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
+    Object.assign(manager as any, { browser, current: "warm" });
+    return { manager, browser, fetched, store };
+  }
+
+  test("selects the term in preReg mode, opens Prepare for Registration, and parses the ticket", async () => {
+    const t = ticketManager("Time Tickets\nRegistration Time Ticket\n11/09/2026 07:00 AM - 01/29/2027 11:59 PM");
+    const parsed = await t.manager.readTicket("120271");
+    expect(parsed).toEqual({ status: "found", windows: [{ start: "2026-11-09T13:00:00.000Z", end: "2027-01-30T05:59:00.000Z" }] });
+    expect(t.fetched[0]).toMatchObject({ method: "POST", form: { term: "120271" } });
+    expect(t.fetched[0]!.url).toEndWith("/term/search?mode=preReg");
+    expect(t.browser.navigations).toEqual([PREP]);
+    // Nothing else was requested: no registration endpoints.
+    expect(t.fetched.length).toBe(1);
+  });
+
+  test("leaving Banner means the session is gone", async () => {
+    const t = ticketManager("", { landOn: "https://login.microsoftonline.com/x" });
+    await expect(t.manager.readTicket("120271")).rejects.toThrow("login_required");
+    expect(t.manager.state()).toBe("cold");
+  });
+
+  test("term search failure", async () => {
+    const t = ticketManager("", { termSearchStatus: 500 });
+    await expect(t.manager.readTicket("120271")).rejects.toThrow("term_search_failed");
+  });
+
+  test("registration reads wait for a ticket read and re-select their term afterwards", async () => {
+    const t = ticketManager("Time Ticket 11/09/2026 07:00 AM");
+    Object.assign(t.manager as any, { activeTerm: "120271", termEligibility: new Map([["120271", { allowed: true, messages: [] }]]) });
+    const ticket = t.manager.readTicket("120271");
+    const schedule = t.manager.readScheduleDetailed("120271");
+    await ticket;
+    await schedule;
+    const order = t.fetched.map(f => f.url.replace(/^.*\/ssb/, ""));
+    expect(order[0]).toBe("/term/search?mode=preReg");
+    // After the ticket read the registration term is selected again before the schedule read.
+    expect(order[1]).toBe("/term/search?mode=registration");
+  });
+
+  test("refuses while a registration batch is authorized", async () => {
+    const t = ticketManager("Time Ticket 11/09/2026 07:00 AM");
+    (t.manager as any).authorized = { term: "120271", addCrns: ["11111"], dropCrn: null };
+    await expect(t.manager.readTicket("120271")).rejects.toThrow("batch_in_flight");
+    expect(t.fetched.length).toBe(0);
+  });
+});

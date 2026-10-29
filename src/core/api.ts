@@ -5,11 +5,16 @@ import type {
   AnyFilters,
   AppEvent,
   CourseDetail,
+  Plan,
+  PlanCourse,
+  PlanGenerateResult,
+  PlanPick,
   PublicSettings,
   SearchHit,
   SettingsPatch,
   Snapshot,
   Term,
+  TicketDetectResult,
   WantedCourse,
 } from "./types";
 import type { RehearsalReport } from "./contracts";
@@ -40,6 +45,18 @@ export interface Api {
   "PUT /api/wanted/:id/bundles": { body: { bundles: string[][] }; res: WantedCourse }; // replace ranked list
   "DELETE /api/bundles/:id": { res: { ok: true } };
 
+  // schedule planner (plans belong to a term; targeting only works for the active term)
+  "GET /api/plans?term": { res: Plan[] }; // creates "Plan 1" when the term has none
+  "POST /api/plans": { body: { term: string; name: string }; res: Plan };
+  "PATCH /api/plans/:id": { body: Partial<Pick<Plan, "name" | "breaks" | "ignoreRegistered" | "openOnly" | "sort">>; res: Plan };
+  "DELETE /api/plans/:id": { res: { ok: true } };
+  "POST /api/plans/:id/courses": { body: { subject: string; number: string }; res: Plan };
+  "PATCH /api/plans/:id/courses/:cid": { body: Partial<Pick<PlanCourse, "included" | "excludedCrns" | "locked" | "backups">>; res: Plan };
+  "DELETE /api/plans/:id/courses/:cid": { res: Plan };
+  "POST /api/plans/:id/generate": { res: PlanGenerateResult };
+  "POST /api/plans/:id/target": { body: { picks: PlanPick[] }; res: { plan: Plan; wanted: WantedCourse[] } }; // arms every picked course
+  // Plan changes are also broadcast on the stream as { type: "plans", term, plans }.
+
   // control
   "POST /api/control/pause": { res: { ok: true } };
   "POST /api/control/resume": { res: { ok: true } };
@@ -47,6 +64,7 @@ export interface Api {
   "POST /api/session/login": { res: { ok: true } };
   "POST /api/session/logout": { res: { ok: true } };
   "POST /api/session/pause": { body: { minutes: number | null }; res: { ok: true } }; // null = resume now
+  "POST /api/ticket/detect": { body: { term: string }; res: TicketDetectResult }; // rehearsal or live mode, read-only; applies the ticket when found
   "POST /api/rehearsal": { body: { term: string }; res: RehearsalReport };
   "POST /api/live": { body: { enabled: boolean; confirmText?: string }; res: PublicSettings }; // confirmText must equal the term label, e.g. "Spring 2027"
   "POST /api/swaps/unlock": { body: { confirmText: string }; res: PublicSettings }; // only after a passing swap test

@@ -50,6 +50,16 @@ Run a rehearsal before going live: Settings, Rehearsal, Run rehearsal. It shows 
 
 The app checks seats every 10 seconds. When every section in a bundle has a seat, it registers that bundle. Your first choice wins if several are open.
 
+## Plan a schedule
+
+1. Open **Plan** in the sidebar and add the courses you want to take.
+2. Add breaks for times you want free, for example MWF 12:00 to 1:00 PM.
+3. Choose **Generate**. Every schedule listed includes each course's required sections (lecture plus lab or discussion) with no time clashes, around the classes you are already in.
+4. Move through the list with the arrow keys to preview each week. Press P to pin one and compare it with another.
+5. Choose **Target this schedule**. Those courses go on your watchlist, armed, with your chosen sections first and backup sections that still fit your week after them.
+
+Use the menu on a course to skip sections, lock one exact combination, or turn backups off. You can keep several named plans per term.
+
 ## Auto or approve
 
 In Settings, Registration:
@@ -59,7 +69,9 @@ In Settings, Registration:
 
 ## Time ticket
 
-If you know when your registration window opens, enter it in Settings. The app logs in 10 minutes early and tries to register right at the opening second.
+In rehearsal and live mode the app reads your time ticket from Banner's Prepare for Registration page every 12 hours and fills it in for you. **Check now** in Settings reads it right away. If you type a ticket yourself, automatic detection turns off until you switch it back on.
+
+The app logs in 10 minutes before your ticket and tries to register right at the opening second. It never checks the ticket in the 30 minutes before it opens.
 
 ## Notifications
 
@@ -109,6 +121,7 @@ Run these yourself with `REGISTRATION_MODE=rehearsal`. They only read.
 bun run smoke:anon 59777        # live seat count for one CRN, no login
 bun run probe:discover          # records how your registration page loads your schedule
 bun run probe:sessions          # checks whether logging into Banner yourself logs the app out
+bun run probe:ticket 120271     # shows the time ticket the app reads for a term
 ```
 
 ## Run the tests

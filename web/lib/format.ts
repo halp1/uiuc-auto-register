@@ -106,13 +106,17 @@ export function time12(hhmm: string | null): string {
   return `${h12}:${ms} ${suffix}`;
 }
 
-export function meetingTime(m: Meeting): string {
-  if (!m.start || !m.end) return "Arranged";
-  const a = time12(m.start);
-  const b = time12(m.end);
+export function timeRange(start: string, end: string): string {
+  const a = time12(start);
+  const b = time12(end);
   // "10:00 to 10:50 AM" when both ends share the suffix
   if (a.slice(-2) === b.slice(-2)) return `${a.slice(0, -3)} to ${b}`;
   return `${a} to ${b}`;
+}
+
+export function meetingTime(m: Meeting): string {
+  if (!m.start || !m.end) return "Arranged";
+  return timeRange(m.start, m.end);
 }
 
 export function termName(terms: Term[], code: string | null | undefined): string {

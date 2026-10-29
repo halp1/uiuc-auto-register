@@ -9,7 +9,8 @@
     "typecheck": "bun check",
     "smoke:anon": "bun scripts/smoke-anon.ts",
     "probe:discover": "bun scripts/probe-discover.ts",
-    "probe:sessions": "bun scripts/probe-sessions.ts"
+    "probe:sessions": "bun scripts/probe-sessions.ts",
+    "probe:ticket": "bun scripts/probe-ticket.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

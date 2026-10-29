@@ -6,6 +6,7 @@ import { SimRegistrar } from "./banner/registrar/sim";
 import { SimBanner, SimSeatSource } from "./banner/sim/state";
 import { Explorer } from "./catalog/explorer";
 import { courseDetail, search } from "./catalog/search";
+import { getStoredCourse } from "./catalog/store";
 import { CatalogSync } from "./catalog/sync";
 import { Bus } from "./core/bus";
 import { systemClock, type Clock } from "./core/clock";
@@ -16,8 +17,10 @@ import { Events } from "./core/events";
 import { isTermCode } from "./core/terms";
 import type { Settings, SystemStatus } from "./core/types";
 import { Orchestrator } from "./engine/orchestrator";
+import { PlanService } from "./engine/plans";
 import { Poller } from "./engine/poller";
 import { TicketScheduler } from "./engine/ticket";
+import { TicketDetector } from "./engine/ticket-detect";
 import { NotificationRouter } from "./notify/router";
 import { loadRealBanner, type RealBanner } from "./real-banner";
 
@@ -95,10 +98,26 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
     events,
   });
 
+  const ticketDetector = new TicketDetector({
+    clock,
+    settings,
+    applySettings: patch => applySettings(patch),
+    events,
+    readTicket: session ? term => session.readTicket(term) : null,
+    ticketPhase: () => ticket.status().phase,
+  });
+
   // ---- catalog ----
   const catalog = new CatalogSync({ store, events });
   const explorer = new Explorer();
   const linked = new LinkedSections(store);
+  const plans = new PlanService({
+    store,
+    events,
+    activeTerm: () => settings().activeTerm,
+    loadDetail: (term, subject, number, opts) =>
+      courseDetail(store, term, subject, number, { explorer, linked, seatSource: opts.seats ? primary : undefined }),
+  });
 
   // ---- status ----
   const status = (): SystemStatus => {
@@ -149,6 +168,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
     bus.publish({ type: "settings", settings: pub });
     if (patch.discordToken !== undefined || patch.discordUserId !== undefined) void notifier.reload();
     if (patch.ticketAt !== undefined || patch.activeTerm !== undefined) ticket.reschedule();
+    ticketDetector.settingsChanged(before, after);
     if (patch.activeTerm !== undefined && patch.activeTerm !== before.activeTerm) {
       publishWanted();
       if (after.activeTerm) bus.publish({ type: "seats", seats: store.listSeats(after.activeTerm) });
@@ -176,6 +196,13 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
     sim,
     search: (term, q) => search(store, term, q),
     courseDetail: (term, subject, number) => courseDetail(store, term, subject, number, { explorer, linked, seatSource: primary }),
+    courseTitle: async (term, subject, number) => {
+      const stored = getStoredCourse(store, term, subject, number);
+      if (stored) return stored.title;
+      return (await courseDetail(store, term, subject, number, { explorer }))?.title ?? null;
+    },
+    planGenerate: planId => plans.generate(planId),
+    planTarget: (planId, picks) => plans.target(planId, picks),
     terms: () => catalog.terms(),
     status,
     settings,
@@ -193,6 +220,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
       });
       return report;
     },
+    detectTicket: term => ticketDetector.detect(term, { manual: true }),
     discordStatus: () => notifier.discordStatus(),
   };
 
@@ -212,6 +240,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
       await notifier.start();
       poller.start();
       ticket.start();
+      ticketDetector.start();
       catalog.startDaily(() => settings().activeTerm);
       real?.start();
 
@@ -233,6 +262,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
       if (prune) clearInterval(prune);
       catalog.stopDaily();
       ticket.stop();
+      ticketDetector.stop();
       await poller.stop();
       await orchestrator.stop();
       await real?.stop();

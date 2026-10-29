@@ -1,5 +1,6 @@
 import {
   Activity,
+  CalendarRange,
   ChevronsUpDown,
   LayoutGrid,
   Menu,
@@ -33,6 +34,7 @@ import { cn, errorMessage } from "@/lib/utils";
 
 const nav = [
   { href: "/", label: "Overview", icon: LayoutGrid, match: (r: RouteMatch) => r.name === "overview" || r.name === "course" },
+  { href: "/plan", label: "Plan", icon: CalendarRange, match: (r: RouteMatch) => r.name === "plan" },
   { href: "/search", label: "Search", icon: Search, match: (r: RouteMatch) => r.name === "search" },
   { href: "/activity", label: "Activity", icon: Activity, match: (r: RouteMatch) => r.name === "activity" },
   { href: "/settings", label: "Settings", icon: Settings, match: (r: RouteMatch) => r.name === "settings" },
@@ -242,7 +244,7 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
  * `fill`: on wide screens the page gets exactly the viewport below the top bar and scrolls its own
  * regions (the Overview's watchlist and activity feed). Narrow screens keep normal page scrolling.
  */
-export function Shell({ children, fill = false }: { children: ReactNode; fill?: boolean }) {
+export function Shell({ children, fill = false, wide = false }: { children: ReactNode; fill?: boolean; wide?: boolean }) {
   const [sheet, setSheet] = useState(false);
 
   useEffect(() => {
@@ -274,6 +276,7 @@ export function Shell({ children, fill = false }: { children: ReactNode; fill?: 
       <main
         className={cn(
           "mx-auto w-full max-w-[1200px] px-4 pb-16 pt-6 sm:px-6 sm:pt-8 lg:px-8",
+          wide && "max-w-[1680px]",
           fill && "xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:pb-8",
         )}
       >
