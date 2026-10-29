@@ -45,11 +45,15 @@ Academic Standing: Good Standing`;
     expect(parseTicket(text)).toEqual({ status: "found", windows });
   });
 
-  test("JSON keys act as labels", () => {
-    const json = JSON.stringify({ data: [{ timeTicketStart: "11/09/2026 07:00 AM", timeTicketEnd: "01/29/2027 11:59 PM" }] });
-    const parsed = parseTicket(ticketText(json)) as Extract<TicketParse, { status: "found" }>;
-    expect(parsed.status).toBe("found");
-    expect(parsed.windows[0]!.start).toBe(winter.start);
+  // Regression: labeled start and end fields were read as two open-ended windows, so once the start
+  // passed, currentWindow picked the end time as the next window to open.
+  test.each([
+    ["JSON start and end keys", ticketText(JSON.stringify({ data: [{ timeTicketStart: "11/09/2026 07:00 AM", timeTicketEnd: "01/29/2027 11:59 PM" }] }))],
+    ["labeled fields", "Registration Time Ticket\nBegin: 11/09/2026 07:00 AM\nEnd: 01/29/2027 11:59 PM"],
+  ])("labeled ends form one window: %s", (_label, text) => {
+    const parsed = parseTicket(text);
+    expect(parsed).toEqual({ status: "found", windows: [winter] });
+    expect(currentWindow((parsed as Extract<TicketParse, { status: "found" }>).windows, chicagoToMs(2026, 12, 1, 12)!)).toEqual(winter);
   });
 
   const filler = "x".repeat(600);

@@ -22,7 +22,10 @@ const NAMED = new RegExp(
   "gi",
 );
 const ISO = /\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?/g;
-const RANGE_GAP = /^\s*(?:-|\u2013|\u2014|to|through|thru|until|till)\s*$/i;
+// Between the two ends of one window: a dash or word ("08:00 AM - 11:59 PM"), or an end label when the
+// ends sit in labeled fields ("Start: ... End: ...", or JSON {"timeTicketStart", "timeTicketEnd"}).
+const RANGE_GAP =
+  /^\s*(?:-|\u2013|\u2014|to|through|thru|until|till|(?:(?:registration\s+)?time\s*tickets?\s+)?(?:end|ends|ending|close|closes)(?:\s+(?:date|time|date\s*time|at|on))?\s*:?)\s*$/i;
 
 interface Hit {
   index: number;
