@@ -14,7 +14,7 @@ import type { SeatInfo, SessionState, Settings, SystemStatus } from "../core/typ
 import { courseForCrn } from "../catalog/store";
 import { AnonymousSeatSource, BANNER_BASE, MEP_CODE, looksLikeLogin, parseEnrollmentInfo, type FetchLike } from "./enrollment";
 import { installInterceptor, type AuthorizedBatch, type InstalledInterceptor } from "./interceptor";
-import { parseTicket, type TicketParse } from "./ticket";
+import { currentWindow, parseTicket, type TicketParse } from "./ticket";
 import type { RegistrationModel } from "./guard";
 import {
   BannerSessionError,
@@ -116,12 +116,10 @@ export class BannerSessionManager implements SessionManager {
   private current: SessionState = "cold";
   private since: number | null = null;
   private lastKeepaliveAt: number | null = null;
-  private pausedUntilMs: number | null = null;
   private lastError: string | null = null;
   private stage: string | null = null;
   private warming: Promise<void> | null = null;
   private keepaliveTimer: { cancel(): void } | null = null;
-  private resumeTimer: { cancel(): void } | null = null;
   private termEligibility = new Map<string, Eligibility>();
   private activeTerm: string | null = null;
   private uniqueSessionId = "";
@@ -142,11 +140,6 @@ export class BannerSessionManager implements SessionManager {
   constructor(private readonly deps: BannerSessionDeps) {
     this.tracker = deps.tracker ?? new TotpWindowTracker();
     this.fetchImpl = deps.fetch ?? ((input, init) => fetch(input, init));
-    const persisted = deps.settings().sessionPausedUntil;
-    if (persisted && persisted > deps.clock.now()) {
-      this.pausedUntilMs = persisted;
-      this.setState("paused");
-    }
   }
 
   // ---------- status ----------
@@ -160,7 +153,7 @@ export class BannerSessionManager implements SessionManager {
       state: this.current,
       since: this.since,
       lastKeepaliveAt: this.lastKeepaliveAt,
-      pausedUntil: this.pausedUntilMs,
+      loggedOut: this.deps.settings().sessionLoggedOut,
       lastError: this.lastError,
       stage: this.stage,
     };
@@ -199,12 +192,6 @@ export class BannerSessionManager implements SessionManager {
     return new BannerSessionError(reason);
   }
 
-  private isPaused(): boolean {
-    const now = this.deps.clock.now();
-    const until = this.pausedUntilMs ?? this.deps.settings().sessionPausedUntil;
-    return Boolean(until && until > now);
-  }
-
   // ---------- lifecycle ----------
 
   async ensureWarm(term: string): Promise<void> {
@@ -217,7 +204,6 @@ export class BannerSessionManager implements SessionManager {
   /** Log in (single flight) without choosing a term. */
   private async warmBase(): Promise<void> {
     if (this.disposed) throw new BannerSessionError("disposed");
-    if (this.isPaused()) throw new BannerSessionError("paused");
     if (this.current === "warm" && this.browser && !this.browser.closed) return;
     if (this.warming) return this.warming;
     this.warming = this.doWarm().finally(() => {
@@ -389,7 +375,7 @@ export class BannerSessionManager implements SessionManager {
       this.scheduleKeepalive();
       return true;
     } catch (error) {
-      if (error instanceof BannerSessionError && error.reason === "login_required" && !this.isPaused() && !this.disposed) {
+      if (error instanceof BannerSessionError && error.reason === "login_required" && !this.disposed) {
         try {
           await this.warmBase();
           if (term) await this.selectTerm(term);
@@ -410,7 +396,7 @@ export class BannerSessionManager implements SessionManager {
     await this.closeBrowser();
     this.termEligibility.clear();
     this.activeTerm = null;
-    if (this.current !== "paused") this.setState("cold", reason);
+    this.setState("cold", reason);
   }
 
   private async closeBrowser() {
@@ -433,27 +419,8 @@ export class BannerSessionManager implements SessionManager {
     if (this.current === "error") this.setState("cold", reason);
   }
 
-  async pauseUntil(until: number | null): Promise<void> {
-    this.resumeTimer?.cancel();
-    this.resumeTimer = null;
-    const now = this.deps.clock.now();
-    if (until && until > now) {
-      this.pausedUntilMs = until;
-      await this.dropSession("paused");
-      this.setState("paused", "paused");
-      this.resumeTimer = this.deps.clock.setTimeout(() => {
-        this.pausedUntilMs = null;
-        if (this.current === "paused") this.setState("cold", "pause_ended");
-      }, until - now);
-    } else {
-      this.pausedUntilMs = null;
-      if (this.current === "paused") this.setState("cold", "pause_ended");
-    }
-  }
-
   async dispose(): Promise<void> {
     this.disposed = true;
-    this.resumeTimer?.cancel();
     if (this.warming) await this.warming.catch(() => {});
     await this.dropSession("disposed");
   }
@@ -569,7 +536,11 @@ export class BannerSessionManager implements SessionManager {
     };
   }
 
-  async rehearse(term: string, crns: string[]): Promise<RehearsalReport> {
+  /**
+   * Read-only end to end check. For a term that is not open yet but has a future time ticket, the schedule
+   * reader is proven on another term that is open now (otherTerms, newest first).
+   */
+  async rehearse(term: string, crns: string[], opts: { otherTerms?: string[]; knownTicketAt?: string | null } = {}): Promise<RehearsalReport> {
     const startedAt = this.deps.clock.now();
     const blockedBefore = this.blockedTotal;
     const report: RehearsalReport = { ok: false, startedAt, finishedAt: startedAt, steps: [], term, eligibility: null, schedule: null, crnChecks: [], blockedWrites: 0, reader: SCHEDULE_READER };
@@ -587,21 +558,59 @@ export class BannerSessionManager implements SessionManager {
     };
     const logged = await step("login", () => this.warmBase().then(() => true), () => null);
     if (logged) {
-      // A term that is not open for registration cannot be read or registered, so it is a failed step.
-      report.eligibility = await step(
-        "term_open",
-        async () => {
-          const e = await this.selectTerm(term);
-          if (!e.allowed) throw new BannerSessionError(`term_not_open: ${e.messages.join("; ") || "Banner says registration is not open"}`);
-          return e;
-        },
-        () => "Registration is open",
-      );
-      if (report.eligibility) {
+      let eligibility: Eligibility | null = null;
+      try {
+        eligibility = await this.selectTerm(term);
+      } catch (error) {
+        const reason = error instanceof BannerSessionError ? error.reason : "unexpected_error";
+        report.steps.push({ name: "term_open", ok: false, detail: reason, ms: 0 });
+      }
+      if (eligibility?.allowed) {
+        report.eligibility = eligibility;
+        report.steps.push({ name: "term_open", ok: true, detail: "Registration is open", ms: 0 });
         const schedule = await step("read_schedule", () => this.readScheduleDetailed(term), s => `${s.crns.length} CRNs: ${s.crns.join(", ") || "none"}`);
         report.schedule = schedule?.crns ?? null;
+        report.readerTerm = schedule ? term : null;
         // The live registrar compares its first read against this snapshot.
         if (schedule) this.deps.store.addScheduleSnapshot(term, schedule.crns, "rehearsal");
+      } else if (eligibility) {
+        // Not open. Before the time ticket that is expected: confirm the ticket is still ahead, then prove the
+        // schedule reader on a term that is open now. Nothing is stored for the closed term, so its first
+        // real read happens at registration time.
+        const why = eligibility.messages.join("; ") || "Banner says registration is not open";
+        const ticket = await step("time_ticket", () => this.readTicket(term), t => (t.status === "found" ? `${t.windows.length} window(s)` : t.status));
+        const window = ticket?.status === "found" ? currentWindow(ticket.windows, this.deps.clock.now()) : null;
+        const now = this.deps.clock.now();
+        const fromBanner = window && Date.parse(window.start) > now ? window.start : null;
+        // A ticket typed in Settings counts when Banner's page could not be read.
+        const typed = opts.knownTicketAt && Date.parse(opts.knownTicketAt) > now ? opts.knownTicketAt : null;
+        const opensAt = fromBanner ?? (ticket?.status === "found" ? null : typed);
+        if (!opensAt) {
+          report.steps.push({ name: "term_open", ok: false, detail: `term_not_open: ${why}`, ms: 0 });
+        } else {
+          report.opensAt = opensAt;
+          report.eligibility = eligibility;
+          report.steps.push({ name: "term_open", ok: true, detail: `Not open yet. Opens ${opensAt}`, ms: 0 });
+          let readerTerm: string | null = null;
+          for (const candidate of (opts.otherTerms ?? []).filter(t => t !== term).slice(0, 4)) {
+            try {
+              if ((await this.selectTerm(candidate)).allowed) {
+                readerTerm = candidate;
+                break;
+              }
+            } catch (error) {
+              if (error instanceof BannerSessionError && error.reason === "login_required") break;
+            }
+          }
+          if (!readerTerm) {
+            report.steps.push({ name: "read_schedule", ok: false, detail: "no_open_term: no term is open right now to check the schedule reader on", ms: 0 });
+          } else {
+            const schedule = await step("read_schedule", () => this.readScheduleDetailed(readerTerm!), s => `${s.crns.length} CRNs: ${s.crns.join(", ") || "none"}`);
+            report.schedule = schedule?.crns ?? null;
+            report.readerTerm = schedule ? readerTerm : null;
+            if (schedule) this.deps.store.addScheduleSnapshot(readerTerm, schedule.crns, "rehearsal");
+          }
+        }
       }
     }
     for (const crn of crns) {

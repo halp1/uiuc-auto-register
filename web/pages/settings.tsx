@@ -1,4 +1,4 @@
-import { Bell, CircleCheck, CircleX, LogOut, Pause, Play, RefreshCw, Send, TriangleAlert, Zap } from "lucide-react";
+import { Bell, CircleCheck, CircleX, LogIn, LogOut, RefreshCw, Send, TriangleAlert, Zap } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RehearsalReport } from "../../src/core/contracts";
 import { NOTIFY_EVENTS, type NotifyEvent, type PublicSettings, type Route, type SettingsPatch } from "../../src/core/types";
@@ -349,7 +349,7 @@ function RegistrationCard({ settings }: { settings: PublicSettings }) {
             liveAvailable
               ? settings.liveEnabled
                 ? `On for ${termName(terms, settings.liveTerm)}`
-                : "Run a passing rehearsal first"
+                : "Run a passing test first"
               : "Needs REGISTRATION_MODE=live on the server"
           }
           control={
@@ -568,7 +568,7 @@ function TermCard({ settings }: { settings: PublicSettings }) {
               value={form.value.activeTerm || undefined}
               onValueChange={activeTerm => form.set({ activeTerm })}
               placeholder="Choose a term"
-              options={terms.map(t => ({ value: t.code, label: `${t.description}  ${t.code}` }))}
+              options={terms.map(t => ({ value: t.code, label: t.description }))}
             />
           </Field>
           <Field
@@ -693,19 +693,28 @@ function usePushState(): [PushState, (s: PushState) => void] {
   return [state, setState];
 }
 
+/** Mirrors the server check: discord.com or discordapp.com, optionally ptb or canary. */
+const WEBHOOK_URL = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/;
+
 function NotificationsCard({ settings }: { settings: PublicSettings }) {
   const form = useForm({ userId: settings.discordUserId ?? "", routing: settings.routing });
   const [token, setToken] = useState("");
   const [replacing, setReplacing] = useState(false);
+  const [hookUrl, setHookUrl] = useState("");
+  const [hookReplacing, setHookReplacing] = useState(false);
   const action = useAction();
   const discord = useAction();
+  const webhook = useAction();
   const push = useAction();
   const [pushState, setPushState] = usePushState();
-  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<"token" | "webhook" | null>(null);
 
   const tokenSet = !!settings.discordTokenHint;
   const tokenEditing = !tokenSet || replacing;
-  const dirty = form.dirty || token.length > 0;
+  const hookSet = !!settings.discordWebhookHint;
+  const hookEditing = !hookSet || hookReplacing;
+  const hookInvalid = hookUrl.trim().length > 0 && !WEBHOOK_URL.test(hookUrl.trim());
+  const dirty = form.dirty || token.length > 0 || hookUrl.length > 0;
 
   async function save() {
     const patch: SettingsPatch = {};
@@ -718,23 +727,34 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
     }
     if (JSON.stringify(form.value.routing) !== JSON.stringify(settings.routing)) patch.routing = form.value.routing;
     if (token) patch.discordToken = token.trim();
+    if (hookUrl.trim()) {
+      if (hookInvalid) {
+        action.setError("Paste a Discord webhook URL, starting with https://discord.com/api/webhooks/");
+        return false;
+      }
+      patch.discordWebhookUrl = hookUrl.trim();
+    }
     const next = await action.run("save", () => saveSettings(patch));
     if (!next) return false;
     form.commit({ userId: next.discordUserId ?? "", routing: next.routing });
     setToken("");
     setReplacing(false);
+    setHookUrl("");
+    setHookReplacing(false);
     return true;
   }
   const reset = () => {
     form.reset();
     setToken("");
     setReplacing(false);
+    setHookUrl("");
+    setHookReplacing(false);
     action.setError(null);
   };
   usePending("notifications", { dirty, save, reset });
 
-  async function test(channel: "discord" | "push") {
-    const a = channel === "discord" ? discord : push;
+  async function test(channel: "discord" | "push" | "webhook") {
+    const a = channel === "discord" ? discord : channel === "webhook" ? webhook : push;
     const res = await a.run("test", () => api.testNotify(channel));
     if (res) a.setMessage({ ok: res.ok, text: res.detail });
   }
@@ -774,7 +794,7 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
     form.set({ routing: { ...form.value.routing, [event]: { ...form.value.routing[event], [channel]: on } } });
 
   const guardRoute = form.value.routing.guard_tripped;
-  const guardNowhere = !guardRoute?.discord && !guardRoute?.push;
+  const guardNowhere = !guardRoute?.discord && !guardRoute?.push && !guardRoute?.webhook;
 
   return (
     <Card id="notifications" className="scroll-mt-20">
@@ -784,7 +804,7 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
         <section aria-labelledby="discord-title" className="flex flex-col gap-4">
           <div className="flex items-center justify-between gap-3">
             <h3 id="discord-title" className="text-sm font-medium">
-              Discord
+              Discord DM
             </h3>
             <Status tone={tokenSet && settings.discordUserId ? "ready" : "off"} className="text-xs text-fg-muted">
               {tokenSet && settings.discordUserId ? "Configured" : "Not configured"}
@@ -826,7 +846,7 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
                   <Button variant="secondary" size="xs" onClick={() => setReplacing(true)}>
                     Replace
                   </Button>
-                  <Button variant="destructive" size="xs" onClick={() => setConfirmRemove(true)}>
+                  <Button variant="destructive" size="xs" onClick={() => setConfirmRemove("token")}>
                     Remove
                   </Button>
                 </div>
@@ -852,6 +872,68 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
             <span className="text-xs text-fg-muted">The bot must share a server with you.</span>
           </div>
           <TestResult action={discord} />
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section aria-labelledby="webhook-title" className="flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 id="webhook-title" className="text-sm font-medium">
+              Discord webhook
+            </h3>
+            <Status tone={hookSet ? "ready" : "off"} className="text-xs text-fg-muted">
+              {hookSet ? "Configured" : "Not set"}
+            </Status>
+          </div>
+          <Field label="Webhook URL" htmlFor="discord-webhook" hint={hookEditing ? "Server Settings, Integrations, Webhooks" : undefined}>
+            {hookEditing ? (
+              <div className="flex gap-2">
+                <Input
+                  id="discord-webhook"
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder={hookReplacing ? "New webhook URL" : "https://discord.com/api/webhooks/..."}
+                  aria-invalid={hookInvalid || undefined}
+                  className="font-mono"
+                  value={hookUrl}
+                  onChange={e => setHookUrl(e.target.value)}
+                />
+                {hookReplacing && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-9"
+                    onClick={() => {
+                      setHookReplacing(false);
+                      setHookUrl("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="flex h-9 items-center gap-2 sm:max-w-[calc(50%-0.5rem)]">
+                <span id="discord-webhook" className="flex-1 truncate text-[0.8125rem] text-fg-muted">
+                  Set, ends in <span className="font-mono text-fg">{settings.discordWebhookHint}</span>
+                </span>
+                <Button variant="secondary" size="xs" onClick={() => setHookReplacing(true)}>
+                  Replace
+                </Button>
+                <Button variant="destructive" size="xs" onClick={() => setConfirmRemove("webhook")}>
+                  Remove
+                </Button>
+              </div>
+            )}
+          </Field>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button size="sm" onClick={() => test("webhook")} loading={webhook.busy === "test"} disabled={!hookSet}>
+              {webhook.busy !== "test" && <Send aria-hidden />}
+              Send test
+            </Button>
+          </div>
+          <TestResult action={webhook} />
         </section>
 
         <div className="h-px bg-border" />
@@ -917,27 +999,37 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
                   <th scope="col" className="px-3 text-left font-normal">
                     Event
                   </th>
-                  <th scope="col" className="w-20 text-center font-normal">
-                    Discord
+                  <th scope="col" className="w-14 py-1.5 text-center font-normal leading-tight sm:w-24">
+                    Discord DM
                   </th>
-                  <th scope="col" className="w-20 text-center font-normal">
+                  <th scope="col" className="w-16 py-1.5 text-center font-normal leading-tight sm:w-24">
+                    Webhook
+                  </th>
+                  <th scope="col" className="w-12 py-1.5 text-center font-normal leading-tight sm:w-24">
                     Push
                   </th>
                 </tr>
               </thead>
               <tbody className="[&>tr+tr]:border-t [&>tr+tr]:border-border">
                 {NOTIFY_EVENTS.map(event => {
-                  const route = form.value.routing[event] ?? { discord: false, push: false };
+                  const route = form.value.routing[event] ?? { discord: false, push: false, webhook: false };
                   return (
                     <tr key={event} className="h-10 transition-colors duration-150 hover:bg-hover">
-                      <th scope="row" id={`route-${event}`} className="px-3 text-left font-normal">
+                      <th scope="row" id={`route-${event}`} className="px-3 py-2 text-left font-normal leading-snug">
                         {notifyLabels[event]}
                       </th>
                       <td className="text-center">
                         <Checkbox
                           checked={route.discord}
                           onCheckedChange={v => setRoute(event, "discord", v === true)}
-                          aria-label={`${notifyLabels[event]} to Discord`}
+                          aria-label={`${notifyLabels[event]} to Discord DM`}
+                        />
+                      </td>
+                      <td className="text-center">
+                        <Checkbox
+                          checked={route.webhook ?? false}
+                          onCheckedChange={v => setRoute(event, "webhook", v === true)}
+                          aria-label={`${notifyLabels[event]} to Discord webhook`}
                         />
                       </td>
                       <td className="text-center">
@@ -952,7 +1044,7 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
                 })}
                 {guardNowhere && (
                   <tr className="bg-[#140e02]">
-                    <td colSpan={3} className="px-3 py-2.5 text-[0.8125rem] text-warning">
+                    <td colSpan={4} className="px-3 py-2.5 text-[0.8125rem] text-warning">
                       <span className="inline-flex items-start gap-2">
                         <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
                         A tripped safety guard will not reach you anywhere but this page.
@@ -967,12 +1059,20 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
       </CardBody>
       <CardNote error={action.error} />
       <ConfirmDialog
-        open={confirmRemove}
-        onOpenChange={setConfirmRemove}
+        open={confirmRemove === "token"}
+        onOpenChange={o => setConfirmRemove(o ? "token" : null)}
         title="Remove the Discord bot token?"
         description="Discord notifications and the Register buttons in DMs stop working until you add a token again."
         confirmLabel="Remove token"
         onConfirm={() => saveSettings({ discordToken: null })}
+      />
+      <ConfirmDialog
+        open={confirmRemove === "webhook"}
+        onOpenChange={o => setConfirmRemove(o ? "webhook" : null)}
+        title="Remove the Discord webhook?"
+        description="Webhook notifications stop until you add one again."
+        confirmLabel="Remove webhook"
+        onConfirm={() => saveSettings({ discordWebhookUrl: null })}
       />
     </Card>
   );
@@ -993,15 +1093,13 @@ function TestResult({ action }: { action: ReturnType<typeof useAction> }) {
 
 function SessionCard() {
   const session = useStore(s => s.status!.session);
-  const now = useNow(1000);
   const action = useAction();
   const [confirmLogout, setConfirmLogout] = useState(false);
-  const paused = session.state === "paused" && session.pausedUntil;
+  const signedOut = session.state === "cold" || session.state === "error";
   const stateLabel = {
-    cold: "Cold",
+    cold: session.loggedOut ? "Logged out" : "Cold",
     logging_in: session.stage ?? "Logging in",
     warm: "Warm",
-    paused: "Paused",
     error: "Error",
   }[session.state];
 
@@ -1015,26 +1113,19 @@ function SessionCard() {
             className="text-[0.8125rem]"
           >
             {stateLabel}
-            {paused && <span className="ml-1.5 font-mono text-fg-muted tabular-nums">{countdown(session.pausedUntil!, now)}</span>}
           </Status>
         </div>
         {session.lastError && <InlineError>{session.lastError}</InlineError>}
-        <p className="text-[0.8125rem] text-fg-muted">Pause before using Banner yourself so the two sessions do not collide.</p>
       </CardBody>
       <CardFooter>
         <div className="min-w-0 flex-1">
           <InlineError>{action.error}</InlineError>
         </div>
         <div className="flex flex-wrap gap-2">
-          {paused ? (
-            <Button size="sm" onClick={() => action.run("resume", () => api.pauseSession(null))} loading={action.busy === "resume"}>
-              {action.busy !== "resume" && <Play aria-hidden />}
-              Resume now
-            </Button>
-          ) : (
-            <Button size="sm" onClick={() => action.run("pause", () => api.pauseSession(30))} loading={action.busy === "pause"}>
-              {action.busy !== "pause" && <Pause aria-hidden />}
-              Pause for 30 min
+          {signedOut && (
+            <Button size="sm" onClick={() => action.run("login", api.login)} loading={action.busy === "login"}>
+              {action.busy !== "login" && <LogIn aria-hidden />}
+              Log in
             </Button>
           )}
           <Button size="sm" variant="destructive" onClick={() => setConfirmLogout(true)} disabled={session.state === "cold"}>
@@ -1047,7 +1138,7 @@ function SessionCard() {
         open={confirmLogout}
         onOpenChange={setConfirmLogout}
         title="Log out of Banner?"
-        description="The next registration will need a fresh login first, which adds a few seconds."
+        description="The app stays logged out until you log in again. It still logs in on its own when a seat opens for an armed course or your time ticket is 10 minutes away."
         confirmLabel="Log out"
         onConfirm={api.logout}
       />
@@ -1055,24 +1146,42 @@ function SessionCard() {
   );
 }
 
-// ---------- Rehearsal ----------
+// ---------- Test (internally "rehearsal") ----------
 
-function RehearsalCard({ term }: { term: string | null }) {
+type TestReport = RehearsalReport;
+
+function stepLabel(name: string): string {
+  if (name === "login") return "Log in";
+  if (name === "term_open") return "Term open for registration";
+  if (name === "read_schedule") return "Read your schedule";
+  if (name === "no_writes") return "Nothing submitted";
+  if (name === "time_ticket") return "Time ticket";
+  const crn = /^crn_(\d+)$/.exec(name);
+  if (crn) return `CRN ${crn[1]} exists`;
+  return name;
+}
+
+function TestCard({ term }: { term: string | null }) {
   const action = useAction();
-  const [report, setReport] = useState<RehearsalReport | null>(null);
+  const [report, setReport] = useState<TestReport | null>(null);
   const terms = useStore(s => s.terms);
 
   async function run() {
     if (!term) return;
     const r = await action.run("run", () => api.rehearsal(term));
-    if (r) setReport(r);
+    if (r) setReport(r as TestReport);
   }
 
+  const readerTerm = report?.readerTerm ?? report?.term ?? term;
+  const readerName = termName(terms, readerTerm);
+  const opensAt = report?.opensAt ?? null;
+  const classes = report?.schedule?.length ?? 0;
+
   return (
-    <Card id="rehearsal" className="scroll-mt-20">
+    <Card id="test" className="scroll-mt-20">
       <CardBody>
         <div className="flex items-center justify-between gap-3">
-          <CardTitle>Rehearsal</CardTitle>
+          <CardTitle>Test</CardTitle>
           {report && (
             <Status tone={report.ok ? "ready" : "error"} className="text-[0.8125rem]">
               {report.ok ? "Passed" : "Failed"}
@@ -1087,6 +1196,17 @@ function RehearsalCard({ term }: { term: string | null }) {
             Running. This takes about 20 seconds.
           </p>
         )}
+        {report && opensAt && (
+          <p role="status" className="rounded-md border border-border bg-black px-3 py-2.5 text-[0.8125rem] text-fg">
+            Registration opens <span className="tabular-nums">{formatDateTime(opensAt)}</span>.
+            {report.schedule && readerTerm !== report.term && (
+              <span className="text-fg-muted">
+                {" "}
+                Your schedule reader was checked on {readerName} ({classes} {classes === 1 ? "class" : "classes"}).
+              </span>
+            )}
+          </p>
+        )}
         {report && (
           <div className="flex flex-col gap-3">
             <ol className="overflow-hidden rounded-md border border-border [&>*+*]:border-t [&>*+*]:border-border">
@@ -1098,7 +1218,7 @@ function RehearsalCard({ term }: { term: string | null }) {
                     <CircleX className="size-4 shrink-0 text-error-fg" aria-label="Failed" />
                   )}
                   <span className="min-w-0 flex-1">
-                    <span className="block">{step.name}</span>
+                    <span className="block">{stepLabel(step.name)}</span>
                     {step.detail && <span className={cn("block text-xs", step.ok ? "text-fg-muted" : "text-error-fg")}>{step.detail}</span>}
                   </span>
                   <span className="font-mono text-xs text-fg-subtle tabular-nums">{(step.ms / 1000).toFixed(1)}s</span>
@@ -1114,8 +1234,8 @@ function RehearsalCard({ term }: { term: string | null }) {
               )}
               {report.schedule && (
                 <>
-                  <dt className="text-fg-muted">Schedule</dt>
-                  <dd className="font-mono tabular-nums">{report.schedule.join(", ") || "Empty"}</dd>
+                  <dt className="text-fg-muted">{readerName} classes</dt>
+                  <dd className="font-mono tabular-nums">{report.schedule.join(", ") || "None"}</dd>
                 </>
               )}
               <dt className="text-fg-muted">Writes blocked</dt>
@@ -1134,7 +1254,7 @@ function RehearsalCard({ term }: { term: string | null }) {
           <InlineError>{action.error}</InlineError>
         </div>
         <Button size="sm" variant="primary" onClick={run} loading={action.busy === "run"} disabled={!term}>
-          Run rehearsal
+          Run test
         </Button>
       </CardFooter>
     </Card>
@@ -1299,7 +1419,9 @@ export function SettingsPage() {
 
   useEffect(() => {
     if (!location.hash) return;
-    requestAnimationFrame(() => document.getElementById(location.hash.slice(1))?.scrollIntoView());
+    // #rehearsal is the card's old anchor.
+    const id = location.hash.slice(1) === "rehearsal" ? "test" : location.hash.slice(1);
+    requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView());
   }, []);
 
   if (!settings) return null;
@@ -1313,7 +1435,7 @@ export function SettingsPage() {
           <TermCard settings={settings} />
           <NotificationsCard settings={settings} />
           <SessionCard />
-          {(mode === "rehearsal" || mode === "live") && <RehearsalCard term={settings.activeTerm} />}
+          {(mode === "rehearsal" || mode === "live") && <TestCard term={settings.activeTerm} />}
           {mode === "simulated" && <SimulatorCard term={settings.activeTerm} />}
         </div>
       </div>

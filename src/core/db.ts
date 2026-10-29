@@ -98,7 +98,7 @@ export const PLAN_LIMITS = { plansPerTerm: 10, coursesPerPlan: 12, breaks: 20, e
 const PLAN_SORTS: readonly PlanSort[] = ["open", "days", "start", "end", "gaps"];
 
 export function defaultRouting(): Record<NotifyEvent, Route> {
-  return Object.fromEntries(NOTIFY_EVENTS.map(event => [event, { discord: false, push: false }])) as Record<
+  return Object.fromEntries(NOTIFY_EVENTS.map(event => [event, { discord: false, push: false, webhook: false }])) as Record<
     NotifyEvent,
     Route
   >;
@@ -121,8 +121,9 @@ export function defaultSettings(): Settings {
     liveTerm: null,
     swapsUnlocked: false,
     globalPaused: false,
-    sessionPausedUntil: null,
+    sessionLoggedOut: false,
     discordToken: null,
+    discordWebhookUrl: null,
     discordUserId: null,
     routing: defaultRouting(),
     vapidPublicKey: null,
@@ -224,7 +225,10 @@ export class Store {
       if (row.key in settings) (settings as any)[row.key] = JSON.parse(row.value);
     }
     // Keep routing complete when new events are added later.
-    settings.routing = { ...defaultRouting(), ...settings.routing };
+    const defaults = defaultRouting();
+    settings.routing = Object.fromEntries(
+      Object.entries(defaults).map(([event, route]) => [event, { ...route, ...(settings.routing as any)?.[event] }]),
+    ) as Settings["routing"];
     return settings;
   }
 
@@ -240,8 +244,12 @@ export class Store {
   }
 
   publicSettings(settings = this.getSettings()): PublicSettings {
-    const { discordToken, vapidPrivateKey, ...rest } = settings;
-    return { ...rest, discordTokenHint: discordToken ? discordToken.slice(-4) : null };
+    const { discordToken, discordWebhookUrl, vapidPrivateKey, ...rest } = settings;
+    return {
+      ...rest,
+      discordTokenHint: discordToken ? discordToken.slice(-4) : null,
+      discordWebhookHint: discordWebhookUrl ? discordWebhookUrl.slice(-4) : null,
+    };
   }
 
   // ---------- wanted courses & bundles ----------

@@ -167,7 +167,7 @@ describe("TicketDetector", () => {
     expect(t.settings.ticketCheckedAt).toBe(t.clock.now());
   });
 
-  test("never reads near the ticket or while the session is paused", async () => {
+  test("never reads near the ticket", async () => {
     const t = setup(async () => found(iso(2026, 11, 9, 7)));
     t.set({ ticketAt: new Date(t.clock.now() + 10 * 60 * 1000).toISOString() });
     expect(() => t.detector.detect("120271", { manual: true })).toThrow(TicketDetectError);
@@ -175,8 +175,6 @@ describe("TicketDetector", () => {
     t.phase("firing");
     expect(() => t.detector.detect("120271", { manual: true })).toThrow(TicketDetectError);
     t.phase("none");
-    t.set({ sessionPausedUntil: t.clock.now() + 60_000 });
-    expect(() => t.detector.detect("120271", { manual: true })).toThrow(TicketDetectError);
     expect(t.reads).toEqual([]);
   });
 
@@ -188,6 +186,17 @@ describe("TicketDetector", () => {
     expect(error).toBeInstanceOf(TicketDetectError);
     expect(error.status).toBe(502);
     expect(t.settings.ticketCheckedAt).toBeNull();
+  });
+
+  test("after Log out only a manual check reads", async () => {
+    const t = setup(async () => found(iso(2026, 11, 9, 7)));
+    t.set({ sessionLoggedOut: true });
+    t.detector.start();
+    await t.clock.advance(DETECT_FIRST_DELAY_MS * 2);
+    expect(t.reads).toEqual([]);
+    await t.detector.detect("120271", { manual: true });
+    expect(t.reads).toEqual(["120271"]);
+    t.detector.stop();
   });
 
   test("simulated mode has no reader", () => {

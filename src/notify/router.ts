@@ -1,4 +1,4 @@
-// Routes app events and approval hooks to Discord and web push according to settings.routing.
+// Routes app events and approval hooks to the Discord bot, a Discord webhook, and web push according to settings.routing.
 // Every route defaults off. Nothing here throws into the caller.
 
 import { systemClock, type Clock } from "../core/clock";
@@ -16,6 +16,7 @@ import {
   type OutMessage,
 } from "./format";
 import { APPROVAL_ACTIONS, PushChannel, type PushPayload, type PushResult } from "./webpush";
+import { WebhookChannel, type WebhookSender } from "./webhook";
 
 export const RATE_LIMIT_MS = 60_000;
 const FAILURE_REPORT_MS = 5 * 60_000;
@@ -52,13 +53,14 @@ export interface NotificationRouterDeps {
   events?: { emit(event: NewEvent): unknown };
   clock?: Clock;
   /** Inject fake channels in tests. */
-  channels?: { discord?: DiscordSender; push?: PushSenderChannel };
+  channels?: { discord?: DiscordSender; push?: PushSenderChannel; webhook?: WebhookSender };
   log?: (message: string, error?: unknown) => void;
 }
 
 export class NotificationRouter implements Notifier {
   private discord: DiscordSender;
   private push: PushSenderChannel;
+  private webhook: WebhookSender;
   private clock: Clock;
   private controlFn: () => ControlApi | null;
   private lastSent = new Map<string, number>();
@@ -77,6 +79,7 @@ export class NotificationRouter implements Notifier {
       new DiscordChannel({ settings: deps.settings, control: () => this.controlFn(), clock: this.clock });
     this.push =
       deps.channels?.push ?? new PushChannel({ store: deps.store, settings: deps.settings, updateSettings: deps.updateSettings });
+    this.webhook = deps.channels?.webhook ?? new WebhookChannel({ settings: deps.settings });
   }
 
   setControl(control: ControlApi | (() => ControlApi | null)): void {
@@ -106,11 +109,12 @@ export class NotificationRouter implements Notifier {
       // approval_needed is delivered by approvalCreated(), which carries the buttons.
       if (event.kind === "approval_needed") return;
       const route = this.route(event.kind);
-      if (!route.discord && !route.push) return;
+      if (!route.discord && !route.push && !route.webhook) return;
       if (this.rateLimited(event)) return;
       const message = formatEvent(event, this.courseLabel(event.courseId));
       const urgent = event.kind === "guard_tripped" || message.severity === "critical";
       if (route.discord) this.track(this.toDiscord(message, {}, event.kind));
+      if (route.webhook) this.track(this.toWebhook(message, event.kind));
       if (route.push)
         this.track(this.toPush({ ...this.payload(message), requireInteraction: urgent || undefined }, urgent, event.kind));
     } catch (error) {
@@ -123,6 +127,8 @@ export class NotificationRouter implements Notifier {
       if (this.disposed) return;
       const route = this.route("approval_needed");
       const message = formatApproval(approval, this.clock.now());
+      // A webhook cannot carry buttons, so it only tells you to answer in the app or the DM.
+      if (route.webhook) this.track(this.toWebhook({ ...message, body: [message.body, "Register or skip it in the app."].filter(Boolean).join("\n") }, "approval_needed"));
       if (route.discord) {
         this.track(
           this.toDiscord(message, { approvalId: approval.id }, "approval_needed").then(messageId => {
@@ -155,6 +161,7 @@ export class NotificationRouter implements Notifier {
           this.discord.edit(messageId, message).catch(error => this.reportFailure("discord", error)),
         );
       }
+      if (this.route("approval_needed").webhook) this.track(this.toWebhook(message, "approval_needed"));
       if (this.route("approval_needed").push) {
         // Same tag replaces the approval notification so stale buttons disappear.
         this.track(this.toPush({ ...this.payload(message), approvalId: approval.id, silent: true }, false, "approval_needed"));
@@ -169,6 +176,7 @@ export class NotificationRouter implements Notifier {
       if (this.disposed) return;
       const route = this.route("approval_needed");
       const message = formatApprovalReminder(approval);
+      if (route.webhook) this.track(this.toWebhook(message, "approval_needed"));
       if (route.discord) {
         const replyTo = this.deps.store.approvalDiscordMessage(approval.id);
         this.track(this.toDiscord(message, { replyTo }, "approval_needed"));
@@ -187,7 +195,7 @@ export class NotificationRouter implements Notifier {
     }
   }
 
-  async test(channel: "discord" | "push"): Promise<{ ok: boolean; detail: string }> {
+  async test(channel: "discord" | "push" | "webhook"): Promise<{ ok: boolean; detail: string }> {
     const message: OutMessage = {
       title: "Test notification",
       body: "Notifications from UIUC Auto Register reach you here.",
@@ -198,6 +206,10 @@ export class NotificationRouter implements Notifier {
       if (channel === "discord") {
         await this.discord.send(message);
         return { ok: true, detail: "Sent a test DM." };
+      }
+      if (channel === "webhook") {
+        await this.webhook.send(message);
+        return { ok: true, detail: "Posted a test message to the channel." };
       }
       const result = await this.push.send(this.payload(message));
       return { ok: result.sent > 0, detail: result.detail };
@@ -234,7 +246,7 @@ export class NotificationRouter implements Notifier {
 
   private route(kind: NotifyEvent) {
     const route = this.deps.settings().routing?.[kind];
-    return { discord: route?.discord === true, push: route?.push === true };
+    return { discord: route?.discord === true, push: route?.push === true, webhook: route?.webhook === true };
   }
 
   private rateLimited(event: AppEvent): boolean {
@@ -278,6 +290,14 @@ export class NotificationRouter implements Notifier {
     }
   }
 
+  private async toWebhook(message: OutMessage, kind: NotifyEvent): Promise<void> {
+    try {
+      await this.webhook.send(message);
+    } catch (error) {
+      this.reportFailure("webhook", error, kind);
+    }
+  }
+
   private async toPush(payload: PushPayload, urgent: boolean, kind: NotifyEvent): Promise<void> {
     try {
       const result = await this.push.send(payload, { urgent });
@@ -288,7 +308,7 @@ export class NotificationRouter implements Notifier {
   }
 
   /** Log every failure, and emit at most one "info" event per channel every five minutes. */
-  private reportFailure(channel: "discord" | "push", error: unknown, kind?: NotifyEvent): void {
+  private reportFailure(channel: "discord" | "push" | "webhook", error: unknown, kind?: NotifyEvent): void {
     const detail = (error as Error)?.message ?? String(error);
     this.log(`${channel} delivery failed${kind ? ` (${kind})` : ""}: ${detail}`);
     if (!this.deps.events) return;
@@ -301,7 +321,8 @@ export class NotificationRouter implements Notifier {
       this.deps.events.emit({
         kind: "info",
         severity: "warning",
-        title: channel === "discord" ? "Discord notification failed" : "Push notification failed",
+        title:
+          channel === "discord" ? "Discord notification failed" : channel === "webhook" ? "Discord webhook notification failed" : "Push notification failed",
         detail,
         payload: { channel, event: kind ?? null },
       });

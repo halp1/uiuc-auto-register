@@ -1,4 +1,4 @@
-// User-run time ticket check (rehearsal mode only, strictly read-only).
+// User-run time ticket check (test mode only, strictly read-only).
 //   bun run probe:ticket [term]        default: the active term, else Spring 2027
 // Logs in with the write interceptor blocking all writes, reads Prepare for Registration, and prints only
 // the parsed ticket dates. Page text is never printed or saved.
@@ -14,7 +14,7 @@ import { currentWindow } from "../src/banner/ticket";
 
 const config = loadConfig();
 if (config.mode !== "rehearsal") {
-  console.error("probe:ticket requires REGISTRATION_MODE=rehearsal");
+  console.error("probe:ticket requires REGISTRATION_MODE=test");
   process.exit(2);
 }
 const term = process.argv[2] ?? "120271";

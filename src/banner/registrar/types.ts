@@ -281,7 +281,6 @@ export type SessionReason =
   | "browser_launch_failed"
   | "login_failed"
   | "login_blocked"
-  | "paused"
   | "login_required"
   | "term_not_allowed"
   | "term_search_failed"

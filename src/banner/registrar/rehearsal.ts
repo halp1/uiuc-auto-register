@@ -38,11 +38,11 @@ export class RehearsalRegistrar implements Registrar {
         outcome: "dry_run",
         rows: request.addCrns.map(crn => ({ crn, ok: true, message: "Dry run" })),
         classification: null,
-        message: `Would register CRNs ${request.addCrns.join(", ")}${drop} (rehearsal, nothing submitted)`,
+        message: `Would register CRNs ${request.addCrns.join(", ")}${drop} (test mode, nothing submitted)`,
       });
     } catch (error) {
       const reason = error instanceof BannerSessionError ? error.reason : "unexpected_error";
-      return done({ outcome: "failed", rows: [], classification: "transient", message: `Rehearsal could not run: ${reason}` });
+      return done({ outcome: "failed", rows: [], classification: "transient", message: `Test could not run: ${reason}` });
     }
   }
 }

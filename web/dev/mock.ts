@@ -317,15 +317,16 @@ let settings: PublicSettings = {
   ticketSource: "banner",
   ticketCheckedAt: now - 47 * min,
   ticketCheckedTerm: TERM,
+  sessionLoggedOut: false,
   liveEnabled: false,
   liveTerm: null,
   swapsUnlocked: false,
   globalPaused: false,
-  sessionPausedUntil: null,
   discordUserId: "184392011734581248",
   discordTokenHint: "4f2a",
+  discordWebhookHint: null,
   routing: Object.fromEntries(
-    NOTIFY_EVENTS.map(e => [e, { discord: ["approval_needed", "registered", "registration_failed"].includes(e), push: e === "approval_needed" }]),
+    NOTIFY_EVENTS.map(e => [e, { discord: ["approval_needed", "registered", "registration_failed"].includes(e), push: e === "approval_needed", webhook: false }]),
   ) as PublicSettings["routing"],
   vapidPublicKey: null,
 };
@@ -357,7 +358,7 @@ let status: SystemStatus = {
     state: "warm",
     since: now - 42 * min,
     lastKeepaliveAt: now - 3 * min,
-    pausedUntil: null,
+    loggedOut: false,
     lastError: null,
     stage: null,
   },
@@ -610,7 +611,7 @@ export async function mockRequest(method: string, path: string, body: any): Prom
     return { ok: true };
   }
   if (key === "POST /api/session/login") {
-    status = { ...status, session: { ...status.session, state: "logging_in", stage: "Duo TOTP", lastError: null } };
+    status = { ...status, session: { ...status.session, state: "logging_in", stage: "Duo TOTP", lastError: null, loggedOut: false } };
     push({ type: "status", status: clone(status) });
     setTimeout(() => {
       status = { ...status, session: { ...status.session, state: "warm", since: Date.now(), stage: null } };
@@ -619,37 +620,36 @@ export async function mockRequest(method: string, path: string, body: any): Prom
     return { ok: true };
   }
   if (key === "POST /api/session/logout") {
-    status = { ...status, session: { ...status.session, state: "cold", since: Date.now() } };
-    push({ type: "status", status: clone(status) });
-    return { ok: true };
-  }
-  if (key === "POST /api/session/pause") {
-    const until = body.minutes ? Date.now() + body.minutes * min : null;
-    status = { ...status, session: { ...status.session, state: until ? "paused" : "cold", pausedUntil: until } };
+    status = { ...status, session: { ...status.session, state: "cold", since: Date.now(), loggedOut: true } };
+    settings = { ...settings, sessionLoggedOut: true };
+    push({ type: "settings", settings: clone(settings) });
     push({ type: "status", status: clone(status) });
     return { ok: true };
   }
   if (key === "POST /api/rehearsal") {
     await wait(1200);
-    const r: RehearsalReport = {
+    // Not open yet: Spring opens later, the schedule reader is proven on the open Fall term.
+    const opens = new Date(Date.now() + 11 * 86400_000);
+    opens.setUTCHours(13, 0, 0, 0);
+    const r: RehearsalReport & { opensAt: string | null; readerTerm: string | null } = {
       ok: true,
       startedAt: Date.now() - 9400,
       finishedAt: Date.now(),
       term: body.term,
       steps: [
-        { name: "Open Banner", ok: true, detail: null, ms: 820 },
-        { name: "Shibboleth login", ok: true, detail: null, ms: 2140 },
-        { name: "Duo TOTP", ok: true, detail: "Code accepted", ms: 1610 },
-        { name: "Select term", ok: true, detail: "Spring 2027", ms: 540 },
-        { name: "Read eligibility", ok: true, detail: "Allowed to register", ms: 380 },
-        { name: "Read schedule", ok: true, detail: "3 CRNs", ms: 910 },
-        { name: "Check wanted CRNs", ok: true, detail: "9 of 9 exist", ms: 2400 },
-        { name: "Write interceptor", ok: true, detail: "0 writes blocked", ms: 4 },
+        { name: "login", ok: true, detail: "Logged in with TOTP", ms: 4570 },
+        { name: "term_open", ok: true, detail: `Not open yet. Opens ${opens.toLocaleString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`, ms: 540 },
+        { name: "read_schedule", ok: true, detail: "Fall 2026, 9 classes", ms: 910 },
+        { name: "crn_31208", ok: true, detail: "CS 225 Data Structures", ms: 300 },
+        { name: "crn_58423", ok: true, detail: "MATH 241 Calculus III", ms: 280 },
+        { name: "no_writes", ok: true, detail: "0 writes blocked", ms: 4 },
       ],
-      eligibility: { allowed: true, messages: [] },
-      schedule: ["40121", "31110", "58001"],
+      eligibility: null,
+      schedule: ["70412", "70418", "41022", "41030", "58001", "58014", "31110", "31117", "66520"],
       crnChecks: [],
       blockedWrites: 0,
+      opensAt: opens.toISOString(),
+      readerTerm: "120268",
     };
     return r;
   }
@@ -663,7 +663,7 @@ export async function mockRequest(method: string, path: string, body: any): Prom
     return clone(settings);
   }
   if (key === "POST /api/ticket/detect") {
-    if (status.mode === "simulated") throw new MockError("Ticket detection needs Rehearsal or Live mode.");
+    if (status.mode === "simulated") throw new MockError("Ticket detection needs Test or Live mode.");
     await wait(1400);
     // A ticket a few days out, on the hour, Central time.
     const at = new Date(Date.now() + 3 * 86400_000);
@@ -686,7 +686,9 @@ export async function mockRequest(method: string, path: string, body: any): Prom
   }
   if (key === "PUT /api/settings") {
     if (body.pollIntervalSec !== undefined && body.pollIntervalSec < 10) throw new MockError("Polling interval must be at least 10 seconds.");
-    const { discordToken, ...rest } = body;
+    const { discordToken, discordWebhookUrl, ...rest } = body;
+    if (typeof discordWebhookUrl === "string" && !/^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/.test(discordWebhookUrl))
+      throw new MockError("That is not a Discord webhook URL.");
     const manualTicket = body.ticketAt !== undefined && body.ticketAt !== settings.ticketAt;
     settings = { ...settings, ...rest };
     if (manualTicket) {
@@ -694,6 +696,8 @@ export async function mockRequest(method: string, path: string, body: any): Prom
       if (body.ticketAuto !== true) settings.ticketAuto = false;
     }
     if (discordToken !== undefined) settings.discordTokenHint = discordToken ? String(discordToken).slice(-4) : null;
+    if (discordWebhookUrl !== undefined)
+      settings.discordWebhookHint = discordWebhookUrl ? String(discordWebhookUrl).replace(/\/$/, "").slice(-4) : null;
     push({ type: "settings", settings: clone(settings) });
     if (body.ticketAt !== undefined) {
       status = { ...status, ticket: { ...status.ticket, at: body.ticketAt, phase: body.ticketAt ? "waiting" : "none" } };
@@ -703,6 +707,7 @@ export async function mockRequest(method: string, path: string, body: any): Prom
   }
   if ((m = /^POST \/api\/notify\/test\/(\w+)$/.exec(key))) {
     if (m[1] === "discord" && !settings.discordTokenHint) return { ok: false, detail: "No bot token set." };
+    if (m[1] === "webhook") return settings.discordWebhookHint ? { ok: true, detail: "Posted to the channel." } : { ok: false, detail: "No webhook set." };
     return { ok: true, detail: m[1] === "discord" ? "Sent a DM to your account." : "Sent to 1 device." };
   }
   if (key === "GET /api/push/vapid") return { publicKey: "BOrYw0a2b8Zq3hK2yq8m9C4r7lJm2q8f9r3k1p0Qv5w6x7y8z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8" };

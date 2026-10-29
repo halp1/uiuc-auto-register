@@ -94,14 +94,11 @@ describe("BannerSessionManager", () => {
     expect(s.manager.state()).toBe("error");
   });
 
-  test("pauseUntil blocks warming", async () => {
+  test("status reports a user log out", async () => {
     const s = setup({}, CREDS);
-    await s.manager.pauseUntil(Date.UTC(2030, 0, 1));
-    expect(s.manager.state()).toBe("paused");
-    await expect(s.manager.ensureWarm("120271")).rejects.toThrow("paused");
-    expect(s.launches()).toBe(0);
-    await s.manager.pauseUntil(null);
-    expect(s.manager.state()).toBe("cold");
+    expect(s.manager.status().loggedOut).toBe(false);
+    s.store.updateSettings({ sessionLoggedOut: true });
+    expect(s.manager.status().loggedOut).toBe(true);
   });
 
   test("rehearse reports failed steps without throwing", async () => {
@@ -220,6 +217,71 @@ describe("readScheduleDetailed", () => {
     expect(report.schedule).toBeNull();
     expect(report.steps.find(s => s.name === "term_open")).toMatchObject({ ok: false });
     expect(store.latestSchedule("120271")).toBeNull();
+  });
+});
+
+describe("test (rehearse) before registration opens", () => {
+  function closedTermManager(opts: { ticketText: string; openTerms: string[] }) {
+    const store = new Store(":memory:");
+    const events = new Events(store, new Bus());
+    const bannerPage = { url: "https://banner.apps.uillinois.edu/StudentRegistrationSSB/ssb/classRegistration/classRegistration", syncToken: true };
+    const browser = new FakeBrowser(() => bannerPage);
+    browser.page = bannerPage;
+    let selected = "";
+    browser.evaluateOther = (expr: string) => {
+      if (expr.includes("innerText") && expr.includes("200000")) return opts.ticketText;
+      if (expr.includes("window.bootstraps"))
+        return { terms: selected, multiTerm: false, summaryModels: ["11111", "22222"].map(crn => ({ courseReferenceNumber: crn, term: selected, statusDescription: "Registered" })) };
+      const a = JSON.parse(/\}\)\((\{[\s\S]*\})\)$/.exec(expr)?.[1] ?? "{}");
+      const reply = (status: number, body: string) => ({ status, url: String(a.url).split("?")[0], redirected: false, loginPage: false, contentType: "application/json", body });
+      if (String(a.url).includes("term/search")) {
+        const term = a.form?.term;
+        if (String(a.url).includes("mode=registration")) selected = term;
+        const open = opts.openTerms.includes(term);
+        return reply(200, JSON.stringify(open ? { fwdURL: "/x" } : { regAllowed: false, studentEligFailures: ["Term not eligible for registration"] }));
+      }
+      if (String(a.url).includes("getRegistrationEvents")) return reply(500, "");
+      return reply(404, "");
+    };
+    const manager = new BannerSessionManager({ config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" }, events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
+    Object.assign(manager as any, { browser, current: "warm" });
+    return { manager, store };
+  }
+
+  test("a future time ticket passes, and the reader is proven on a term that is open now", async () => {
+    const { manager, store } = closedTermManager({ ticketText: "Time Ticket 01/11/2027 07:00 AM - 01/29/2027 11:59 PM", openTerms: ["120268"] });
+    const report = await manager.rehearse("120271", [], { otherTerms: ["120271", "120268"] });
+    expect(report.ok).toBe(true);
+    expect(report.opensAt).toBe("2027-01-11T13:00:00.000Z");
+    expect(report.readerTerm).toBe("120268");
+    expect(report.schedule).toEqual(["11111", "22222"]);
+    expect(report.steps.find(s => s.name === "term_open")).toMatchObject({ ok: true });
+    // The open term gets the snapshot. The closed term has none, so its first real read is fresh.
+    expect(store.latestSchedule("120268")!.crns).toEqual(["11111", "22222"]);
+    expect(store.latestSchedule("120271")).toBeNull();
+  });
+
+  test("no ticket and no typed ticket still fails as not open", async () => {
+    const { manager } = closedTermManager({ ticketText: "Time Tickets\nYou have no time ticket for this term.", openTerms: ["120268"] });
+    const report = await manager.rehearse("120271", [], { otherTerms: ["120268"] });
+    expect(report.ok).toBe(false);
+    expect(report.steps.find(s => s.name === "term_open")?.detail).toContain("term_not_open");
+  });
+
+  test("an unreadable ticket page falls back to the ticket typed in Settings", async () => {
+    const { manager } = closedTermManager({ ticketText: "Prepare for Registration", openTerms: ["120268"] });
+    const report = await manager.rehearse("120271", [], { otherTerms: ["120268"], knownTicketAt: "2027-01-11T13:00:00.000Z" });
+    expect(report.ok).toBe(true);
+    expect(report.opensAt).toBe("2027-01-11T13:00:00.000Z");
+  });
+
+  test("a ticket in the past does not count, and with no open term the reader step fails", async () => {
+    const past = closedTermManager({ ticketText: "Time Ticket 10/01/2026 07:00 AM", openTerms: ["120268"] });
+    expect((await past.manager.rehearse("120271", [], { otherTerms: ["120268"] })).ok).toBe(false);
+    const none = closedTermManager({ ticketText: "Time Ticket 01/11/2027 07:00 AM", openTerms: [] });
+    const report = await none.manager.rehearse("120271", [], { otherTerms: ["120268"] });
+    expect(report.ok).toBe(false);
+    expect(report.steps.find(s => s.name === "read_schedule")?.detail).toContain("no_open_term");
   });
 });
 

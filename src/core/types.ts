@@ -113,8 +113,9 @@ export type NewEvent = Omit<AppEvent, "id" | "ts" | "detail" | "courseId" | "bun
 };
 
 export interface Route {
-  discord: boolean;
+  discord: boolean; // bot DM
   push: boolean;
+  webhook: boolean; // Discord channel webhook
 }
 
 export interface Settings {
@@ -133,21 +134,23 @@ export interface Settings {
   liveTerm: string | null;
   swapsUnlocked: boolean;
   globalPaused: boolean;
-  sessionPausedUntil: number | null;
+  sessionLoggedOut: boolean; // the user pressed Log out (server-managed)
   discordToken: string | null; // never sent to the client
   discordUserId: string | null;
+  discordWebhookUrl: string | null; // never sent to the client
   routing: Record<NotifyEvent, Route>;
   vapidPublicKey: string | null;
   vapidPrivateKey: string | null; // never sent to the client
 }
 
 // What the client receives.
-export type PublicSettings = Omit<Settings, "discordToken" | "vapidPrivateKey"> & {
+export type PublicSettings = Omit<Settings, "discordToken" | "discordWebhookUrl" | "vapidPrivateKey"> & {
   discordTokenHint: string | null; // e.g. "4f2a" (last 4) when set
+  discordWebhookHint: string | null; // last 4 of the webhook token when set
 };
 
 export type SettingsPatch = Partial<
-  Omit<Settings, "vapidPublicKey" | "vapidPrivateKey" | "liveEnabled" | "liveTerm" | "swapsUnlocked" | "ticketSource" | "ticketCheckedAt" | "ticketCheckedTerm">
+  Omit<Settings, "vapidPublicKey" | "vapidPrivateKey" | "liveEnabled" | "liveTerm" | "swapsUnlocked" | "sessionLoggedOut" | "ticketSource" | "ticketCheckedAt" | "ticketCheckedTerm">
 >;
 
 /** One registration window from Banner's Prepare for Registration page. ISO timestamps. */
@@ -210,7 +213,7 @@ export interface RegisterResult {
 }
 
 export type PollerState = "idle" | "running" | "backoff" | "degraded" | "paused";
-export type SessionState = "cold" | "logging_in" | "warm" | "paused" | "error";
+export type SessionState = "cold" | "logging_in" | "warm" | "error";
 
 export interface SystemStatus {
   mode: Mode; // effective env mode
@@ -233,7 +236,7 @@ export interface SystemStatus {
     state: SessionState;
     since: number | null;
     lastKeepaliveAt: number | null;
-    pausedUntil: number | null;
+    loggedOut: boolean; // the user logged out, so the app does not keep a session open on its own
     lastError: string | null;
     stage: string | null;
   };

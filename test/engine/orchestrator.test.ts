@@ -492,7 +492,7 @@ describe("rehearsal dry runs", () => {
     expect(t.registerCalls.length).toBe(1);
     expect(t.bundles(course.id)).toEqual(["open"]);
     const attempt = t.store.listEvents().find(event => event.kind === "attempt")!;
-    expect(attempt.title).toBe(`Rehearsal: would register CS 225 ${LEC}`);
+    expect(attempt.title).toBe(`Test mode: would register CS 225 ${LEC}`);
     t.sim.setSeats(T, LEC, 0);
     await t.tick();
     t.sim.setSeats(T, LEC, 1);

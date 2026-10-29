@@ -1,5 +1,5 @@
 // User-run probe: does the app's Banner session survive you logging into Banner yourself?
-//   REGISTRATION_MODE=rehearsal bun scripts/probe-sessions.ts [term]
+//   REGISTRATION_MODE=test bun scripts/probe-sessions.ts [term]
 // Read-only: the write interceptor blocks every write for the whole run.
 
 import { Bus } from "../src/core/bus";
@@ -13,7 +13,7 @@ import { BannerSessionError } from "../src/banner/registrar/types";
 
 const config = loadConfig();
 if (config.mode !== "rehearsal") {
-  console.error("probe:sessions requires REGISTRATION_MODE=rehearsal");
+  console.error("probe:sessions requires REGISTRATION_MODE=test");
   process.exit(2);
 }
 const term = process.argv[2] ?? "120271";

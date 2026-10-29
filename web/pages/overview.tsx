@@ -6,16 +6,15 @@ import {
   GripVertical,
   ListRestart,
   LogIn,
+  LogOut,
   OctagonAlert,
-  Pause,
   Pencil,
-  Play,
   Plus,
   Search,
   Trash2,
 } from "lucide-react";
 import { useMemo, useRef, useState, type DragEvent } from "react";
-import type { Approval, WantedCourse } from "../../src/core/types";
+import type { Approval, PublicSettings, SystemStatus, WantedCourse } from "../../src/core/types";
 import { ConfirmDialog } from "@/components/confirm";
 import { BundleChip, CourseState, EventRow, SeatCount } from "@/components/data";
 import { Button } from "@/components/ui/button";
@@ -31,7 +30,7 @@ import { Status, type Tone } from "@/components/ui/status-dot";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
-import { countdown, courseCode, courseDisplayState, formatDateTime, modeLabel, relative, useNow } from "@/lib/format";
+import { countdown, courseCode, courseDisplayState, formatDateTime, relative, useNow } from "@/lib/format";
 import { coursePath, hrefWithMock, linkClick, navigate } from "@/lib/router";
 import { local, seatKey, useStore, type ClientState } from "@/lib/store";
 import { cn, errorMessage } from "@/lib/utils";
@@ -50,9 +49,26 @@ const sessionMeta: Record<string, { tone: Tone; label: string }> = {
   cold: { tone: "off", label: "Cold" },
   logging_in: { tone: "warning", label: "Logging in" },
   warm: { tone: "ready", label: "Warm" },
-  paused: { tone: "off", label: "Paused" },
   error: { tone: "error", label: "Error" },
 };
+
+/** What actually happens when a watched seat opens, in plain words. */
+function seatOutcome(
+  status: SystemStatus,
+  settings: PublicSettings | null,
+): { label: string; tone: Tone; note?: string; href?: string } {
+  if (status.globalPaused) return { label: "Nothing, paused", tone: "off" };
+  if (status.mode === "simulated") return { label: "Simulated register", tone: "neutral" };
+  if (status.mode === "rehearsal") return { label: "Dry run", tone: "neutral", note: "Test mode" };
+  if (!status.liveEnabled) return { label: "Dry run", tone: "warning", note: "Live is off", href: "/settings#registration" };
+  if (settings?.approvalMode === "approve")
+    return {
+      label: "Asks you first",
+      tone: "violet",
+      note: settings.approvalAutoAfterMin != null ? `then registers after ${settings.approvalAutoAfterMin} min` : undefined,
+    };
+  return { label: "Registers", tone: "accent" };
+}
 
 function Cell({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
@@ -65,7 +81,8 @@ function Cell({ label, children, className }: { label: string; children: React.R
 
 function StatusRow({ now }: { now: number }) {
   const status = useStore(s => s.status)!;
-  const fromBanner = useStore(s => s.settings?.ticketSource === "banner" && s.settings.ticketCheckedTerm === s.settings.activeTerm);
+  const settings = useStore(s => s.settings);
+  const fromBanner = settings?.ticketSource === "banner" && settings.ticketCheckedTerm === settings.activeTerm;
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,7 +102,8 @@ function StatusRow({ now }: { now: number }) {
   const session = sessionMeta[status.session.state]!;
   const simulated = status.mode === "simulated";
   const ticketAt = status.ticket.at ? new Date(status.ticket.at).getTime() : null;
-  const pausedUntil = status.session.pausedUntil;
+  const loggedOut = status.session.loggedOut && status.session.state === "cold";
+  const outcome = seatOutcome(status, settings);
 
   return (
     <div className="flex flex-col gap-2">
@@ -94,7 +112,6 @@ function StatusRow({ now }: { now: number }) {
           <Status tone={poller.tone} pulse={poller.label === "Running"}>
             {poller.label}
           </Status>
-          <span className="text-fg-muted tabular-nums">every {status.poller.intervalSec}s</span>
           <span className="text-xs text-fg-subtle tabular-nums">{relative(status.poller.lastCycleAt, now)}</span>
         </Cell>
         <Cell label="Session">
@@ -105,32 +122,23 @@ function StatusRow({ now }: { now: number }) {
           ) : (
           <>
           <Status tone={session.tone} pulse={status.session.state === "logging_in"}>
-            {status.session.state === "logging_in" && status.session.stage ? status.session.stage : session.label}
+            {status.session.state === "logging_in" && status.session.stage
+              ? status.session.stage
+              : loggedOut
+                ? "Logged out"
+                : session.label}
           </Status>
-          {status.session.state === "paused" && pausedUntil && (
-            <span className="text-xs text-fg-muted tabular-nums">{countdown(pausedUntil, now)} left</span>
+          {status.session.state === "cold" || status.session.state === "error" ? (
+            <Button size="xs" onClick={() => run("login", api.login)} loading={busy === "login"}>
+              {busy !== "login" && <LogIn aria-hidden />}
+              Log in
+            </Button>
+          ) : (
+            <Button size="xs" variant="ghost" onClick={() => run("logout", api.logout)} loading={busy === "logout"}>
+              {busy !== "logout" && <LogOut aria-hidden />}
+              Log out
+            </Button>
           )}
-          <span className="flex min-w-0 flex-wrap gap-1.5 max-sm:basis-full">
-            {(status.session.state === "cold" || status.session.state === "error") && (
-              <Button size="xs" onClick={() => run("login", api.login)} loading={busy === "login"}>
-                {busy !== "login" && <LogIn aria-hidden />}
-                Log in
-              </Button>
-            )}
-            {status.session.state === "paused" ? (
-              <Button size="xs" onClick={() => run("resume", () => api.pauseSession(null))} loading={busy === "resume"}>
-                {busy !== "resume" && <Play aria-hidden />}
-                Resume
-              </Button>
-            ) : (
-              status.session.state !== "logging_in" && (
-                <Button size="xs" variant="ghost" onClick={() => run("pause", () => api.pauseSession(30))} loading={busy === "pause"}>
-                  {busy !== "pause" && <Pause aria-hidden />}
-                  Pause 30 min
-                </Button>
-              )
-            )}
-          </span>
           </>
           )}
         </Cell>
@@ -155,12 +163,20 @@ function StatusRow({ now }: { now: number }) {
             </a>
           )}
         </Cell>
-        <Cell label="Mode">
-          <Status tone={status.mode === "live" && status.liveEnabled ? "accent" : status.mode === "live" ? "warning" : "neutral"}>
-            {modeLabel[status.mode]}
-            {status.mode === "live" && !status.liveEnabled ? " (off)" : ""}
-          </Status>
-          {status.mode === "simulated" && <span className="text-xs text-fg-muted">Nothing real happens</span>}
+        <Cell label="When a seat opens">
+          <Status tone={outcome.tone}>{outcome.label}</Status>
+          {outcome.note &&
+            (outcome.href ? (
+              <a
+                href={hrefWithMock(outcome.href)}
+                onClick={linkClick(outcome.href)}
+                className="text-xs text-fg-muted underline decoration-border-hover underline-offset-2 transition-colors duration-150 hover:text-fg"
+              >
+                {outcome.note}
+              </a>
+            ) : (
+              <span className="text-xs text-fg-muted">{outcome.note}</span>
+            ))}
         </Cell>
       </div>
       <InlineError>{error}</InlineError>
@@ -566,8 +582,12 @@ function Watchlist({ now }: { now: number }) {
     );
 
   return (
-    <div className="flex flex-col gap-2">
-      <List data-watchlist aria-label="Watchlist" className="@container">
+    <div className="flex flex-col gap-2 xl:min-h-0 xl:flex-1">
+      <List
+        data-watchlist
+        aria-label="Watchlist"
+        className="relative @container xl:min-h-0 xl:flex-1 xl:overflow-y-auto"
+      >
         {list.map((course, i) => (
           <WatchRow
             key={course.id}
@@ -648,7 +668,6 @@ function Feed({ now }: { now: number }) {
 export function OverviewPage() {
   const now = useNow(1000);
   const approvals = useStore(s => s.approvals.filter(a => a.state === "pending"));
-  const count = useStore(s => s.wanted.filter(w => !s.settings?.activeTerm || w.term === s.settings.activeTerm).length);
 
   return (
     <div className="flex flex-col gap-6 xl:min-h-0 xl:flex-1">
@@ -662,25 +681,24 @@ export function OverviewPage() {
       <StatusRow now={now} />
 
       <div className="grid grid-cols-1 gap-8 xl:min-h-0 xl:flex-1 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="relative -mr-2 flex min-w-0 flex-col gap-6 pr-2 xl:min-h-0 xl:overflow-y-auto">
+        <div className="flex min-w-0 flex-col gap-6 xl:min-h-0">
           {approvals.length > 0 && (
-            <section aria-labelledby="approvals-title" className="flex flex-col gap-3">
-              <h2 id="approvals-title" className="text-sm font-semibold">
+            <section aria-labelledby="approvals-title" className="flex shrink-0 flex-col gap-3 xl:max-h-[40%] xl:min-h-0">
+              <h2 id="approvals-title" className="shrink-0 text-sm font-semibold">
                 Waiting for you
               </h2>
-              <List className="border-[#3d2560]">
+              <List className="relative border-[#3d2560] xl:min-h-0 xl:overflow-y-auto">
                 {approvals.map(a => (
                   <ApprovalRow key={a.id} approval={a} now={now} />
                 ))}
               </List>
             </section>
           )}
-          <section aria-labelledby="watch-title" className="flex flex-col gap-3">
-            <div className="flex h-8 items-center gap-2">
+          <section aria-labelledby="watch-title" className="flex min-w-0 flex-col gap-3 xl:min-h-0 xl:flex-1">
+            <div className="flex h-8 shrink-0 items-center">
               <h2 id="watch-title" className="text-sm font-semibold">
                 Watchlist
               </h2>
-              {count > 0 && <span className="text-[0.8125rem] text-fg-subtle tabular-nums">{count}</span>}
             </div>
             <Watchlist now={now} />
           </section>

@@ -17,6 +17,7 @@ import {
 } from "../core/types";
 import { PlanError } from "../engine/plans";
 import { TicketDetectError } from "../engine/ticket-detect";
+import { normalizeWebhookUrl } from "../notify/webhook";
 import type { AppServices } from "./services";
 
 export class HttpError extends Error {
@@ -187,15 +188,23 @@ function validSettingsPatch(raw: any, current: Settings): Partial<Settings> {
     if (p.discordUserId !== null && !/^\d{15,22}$/.test(String(p.discordUserId))) throw new HttpError(400, "Discord user IDs are 15 to 22 digit numbers.");
     patch.discordUserId = p.discordUserId === null ? null : String(p.discordUserId);
   }
+  if (p.discordWebhookUrl !== undefined) {
+    if (p.discordWebhookUrl === null) patch.discordWebhookUrl = null;
+    else {
+      const url = normalizeWebhookUrl(p.discordWebhookUrl);
+      if (!url) throw new HttpError(400, "That is not a Discord webhook URL. Copy it from Server Settings, Integrations, Webhooks.");
+      patch.discordWebhookUrl = url;
+    }
+  }
   if (p.routing !== undefined) {
     const routing = { ...current.routing };
     for (const event of NOTIFY_EVENTS) {
       const r = (p.routing as any)[event];
-      if (r) routing[event] = { discord: Boolean(r.discord), push: Boolean(r.push) };
+      if (r) routing[event] = { discord: Boolean(r.discord), push: Boolean(r.push), webhook: Boolean(r.webhook) };
     }
     patch.routing = routing;
   }
-  // globalPaused and sessionPausedUntil go through their own endpoints.
+  // globalPaused and sessionLoggedOut go through their own endpoints.
   return patch;
 }
 
@@ -611,23 +620,15 @@ export function apiRoutes(s: AppServices) {
         if (!s.session) throw new HttpError(409, "There is no Banner session in simulated mode.");
         const term = s.settings().activeTerm;
         if (!term) throw new HttpError(400, "Pick a term first.");
+        s.applySettings({ sessionLoggedOut: false });
         void s.session.ensureWarm(term).catch(() => {});
         return json({ ok: true });
       },
     },
     "/api/session/logout": {
       POST: async () => {
+        s.applySettings({ sessionLoggedOut: true });
         if (s.session) await s.session.goCold("user");
-        return json({ ok: true });
-      },
-    },
-    "/api/session/pause": {
-      POST: async req => {
-        const { minutes } = await body<{ minutes: number | null }>(req);
-        if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 240)) throw new HttpError(400, "Pause for 1 to 240 minutes.");
-        const until = minutes === null ? null : Date.now() + minutes * 60000;
-        if (s.session) await s.session.pauseUntil(until);
-        s.applySettings({ sessionPausedUntil: until });
         return json({ ok: true });
       },
     },
@@ -635,7 +636,7 @@ export function apiRoutes(s: AppServices) {
       POST: async req => {
         const { term } = await body<{ term: string }>(req);
         if (!isTermCode(term)) throw new HttpError(400, "Unknown term.");
-        if (s.config.mode === "simulated") throw new HttpError(409, "Rehearsal needs REGISTRATION_MODE=rehearsal or live in your .env file.");
+        if (s.config.mode === "simulated") throw new HttpError(409, "Testing needs REGISTRATION_MODE=test or live in your .env file.");
         if (!s.config.hasCredentials) throw new HttpError(409, "Add your NetID, password, and TOTP secret to the .env file first.");
         return json(await s.rehearse(term));
       },
@@ -644,7 +645,7 @@ export function apiRoutes(s: AppServices) {
       POST: async req => {
         const { term } = await body<{ term: string }>(req);
         if (!isTermCode(term)) throw new HttpError(400, "Unknown term.");
-        if (s.config.mode === "simulated") throw new HttpError(409, "Reading the time ticket needs REGISTRATION_MODE=rehearsal or live in your .env file.");
+        if (s.config.mode === "simulated") throw new HttpError(409, "Reading the time ticket needs REGISTRATION_MODE=test or live in your .env file.");
         if (!s.config.hasCredentials) throw new HttpError(409, "Add your NetID, password, and TOTP secret to the .env file first.");
         return json(await s.detectTicket(term));
       },
@@ -665,7 +666,7 @@ export function apiRoutes(s: AppServices) {
         const report = rehearsal?.payload as { ok?: boolean; schedule?: string[] | null; reader?: string } | undefined;
         // Only the newest rehearsal counts, and only one made with the current schedule reader.
         if (!report?.ok || !Array.isArray(report.schedule) || report.reader !== SCHEDULE_READER)
-          throw new HttpError(409, `Run a rehearsal for ${termLabel(term)} first and check that it found your current classes.`);
+          throw new HttpError(409, `Run a test for ${termLabel(term)} in Settings first and check that it found your current classes.`);
         if ((confirmText ?? "").trim() !== termLabel(term)) throw new HttpError(400, `Type ${termLabel(term)} exactly to turn on Live.`);
         const updated = s.applySettings({ liveEnabled: true, liveTerm: term });
         s.events.emit({ kind: "control", severity: "warning", title: `Live registration on for ${termLabel(term)}` });
@@ -689,7 +690,7 @@ export function apiRoutes(s: AppServices) {
     "/api/notify/test/:channel": {
       POST: async req => {
         const channel = req.params.channel;
-        if (channel !== "discord" && channel !== "push") throw new HttpError(404, "Unknown channel.");
+        if (channel !== "discord" && channel !== "push" && channel !== "webhook") throw new HttpError(404, "Unknown channel.");
         return json(await s.notifier.test(channel));
       },
     },

@@ -516,7 +516,7 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
         events.emit({
           kind: "attempt",
           severity: "info",
-          title: `Rehearsal: would register ${label}`,
+          title: `Test mode: would register ${label}`,
           detail: `${via}. CRNs ${request.addCrns.join(", ")}${request.dropCrn ? `, dropping ${request.dropCrn}` : ""}. ${reasonText ?? ""}`.trim(),
           courseId: course.id,
           bundleId: bundle.id,
@@ -617,7 +617,7 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
       case "registered":
         return `Registered for ${course.subject} ${course.number}`;
       case "stop_course":
-        return outcome.outcome === "dry_run" ? "Rehearsal only, nothing was submitted" : outcome.message ?? "Done";
+        return outcome.outcome === "dry_run" ? "Test mode, nothing was submitted" : outcome.message ?? "Done";
       case "halt":
         return `Stopped: ${outcome.message ?? "registration halted"}`;
       default:

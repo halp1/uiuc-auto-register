@@ -86,7 +86,7 @@ export class LiveRegistrar implements Registrar {
         outcome: "aborted",
         rows: [],
         classification: "unknown",
-        message: `Schedule guard: CRNs ${vanished.join(", ")} from the last schedule read are missing now; nothing was submitted. Run a rehearsal to refresh.`,
+        message: `Schedule guard: CRNs ${vanished.join(", ")} from the last schedule read are missing now; nothing was submitted. Run a test in Settings to refresh.`,
       });
     }
     if (request.dropCrn && !before.includes(request.dropCrn)) {

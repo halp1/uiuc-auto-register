@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Bundle, Meeting, Mode, NotifyEvent, SeatInfo, Term, WantedCourse } from "../../src/core/types";
+import type { Bundle, Meeting, NotifyEvent, SeatInfo, Term, WantedCourse } from "../../src/core/types";
 
 /** Re-render on an interval so relative times stay fresh. */
 export function useNow(intervalMs = 1000) {
@@ -123,12 +123,6 @@ export function termName(terms: Term[], code: string | null | undefined): string
   if (!code) return "No term";
   return terms.find(t => t.code === code)?.description ?? code;
 }
-
-export const modeLabel: Record<Mode, string> = {
-  simulated: "Simulated",
-  rehearsal: "Rehearsal",
-  live: "Live",
-};
 
 export const notifyLabels: Record<NotifyEvent, string> = {
   bundle_opened: "Seat opened",

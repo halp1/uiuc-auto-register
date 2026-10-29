@@ -36,7 +36,8 @@ export function createRealBanner(deps: RealBannerDeps): RealBanner {
   const wantWarm = (): string | null => {
     const s = settings();
     if (s.globalPaused || !s.activeTerm) return null;
-    if (s.sessionPausedUntil && s.sessionPausedUntil > clock.now()) return null;
+    // After Log out the app only logs in when it has to (registering, the time ticket), not to keep warm.
+    if (s.sessionLoggedOut) return null;
     return store.armedCrns(s.activeTerm).length > 0 ? s.activeTerm : null;
   };
 
@@ -46,7 +47,7 @@ export function createRealBanner(deps: RealBannerDeps): RealBanner {
     try {
       const term = wantWarm();
       const state = session.state();
-      if (term && state !== "logging_in" && state !== "paused") await session.ensureWarm(term).catch(() => {});
+      if (term && state !== "logging_in") await session.ensureWarm(term).catch(() => {});
       else if (!term && state === "warm") await session.goCold("idle");
     } finally {
       checking = false;

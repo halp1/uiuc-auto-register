@@ -34,7 +34,7 @@ const kindLabels: Record<EventKind, string> = {
   attempt: "Attempt",
   login_stage: "Login",
   session_state: "Session",
-  rehearsal_result: "Rehearsal",
+  rehearsal_result: "Test",
   settings_changed: "Settings",
   control: "Control",
   catalog_synced: "Catalog",

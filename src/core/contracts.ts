@@ -41,6 +41,10 @@ export interface RehearsalReport {
   blockedWrites: number; // write requests the interceptor refused (should be 0)
   /** Which schedule reader produced `schedule`. Live only trusts rehearsals from the current reader. */
   reader?: string;
+  /** Set when the term is not open yet but Banner shows a future time ticket (ISO). */
+  opensAt?: string | null;
+  /** The term whose schedule was read: `term`, or another open term when `term` is not open yet. */
+  readerTerm?: string | null;
 }
 
 /** Owns the logged-in Banner browser session. Only the auth module implements this. */
@@ -50,14 +54,12 @@ export interface SessionManager {
   ensureWarm(term: string): Promise<void>;
   /** Close the browser and forget the session. */
   goCold(reason: string): Promise<void>;
-  /** Stop touching Banner until the given time (user wants Banner to themselves). */
-  pauseUntil(until: number | null): Promise<void>;
   /** Read currently registered CRNs for a term (read-only). */
   readSchedule(term: string): Promise<string[]>;
   /** Read-only: the time ticket shown on Prepare for Registration for a term. */
   readTicket(term: string): Promise<TicketParse>;
   /** Full read-only rehearsal of the live path. */
-  rehearse(term: string, crns: string[]): Promise<RehearsalReport>;
+  rehearse(term: string, crns: string[], opts?: { otherTerms?: string[]; knownTicketAt?: string | null }): Promise<RehearsalReport>;
   /** Authenticated seat source used as fallback when the anonymous endpoint stops working. */
   authenticatedSeatSource(): SeatSource;
   dispose(): Promise<void>;
@@ -77,7 +79,7 @@ export interface Notifier {
   approvalCreated(approval: Approval): void;
   approvalResolved(approval: Approval, resultText: string): void;
   approvalReminder(approval: Approval): void;
-  test(channel: "discord" | "push"): Promise<{ ok: boolean; detail: string }>;
+  test(channel: "discord" | "push" | "webhook"): Promise<{ ok: boolean; detail: string }>;
   /** Re-read settings (token changed etc.). */
   reload(): Promise<void>;
   dispose(): Promise<void>;

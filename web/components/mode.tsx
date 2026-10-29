@@ -23,7 +23,7 @@ export function ModePill({ status, className }: { status: SystemStatus; classNam
     return (
       <Badge variant="outline" className={className}>
         <Eye aria-hidden />
-        <span className="label">Rehearsal</span>
+        <span className="label">Test</span>
       </Badge>
     );
   return (
@@ -36,7 +36,7 @@ export function ModePill({ status, className }: { status: SystemStatus; classNam
 
 /** Small plan-style pill beside the app name. */
 export function ModeTag({ status, className }: { status: SystemStatus | null; className?: string }) {
-  const label = !status ? "" : status.mode === "live" ? "Live" : status.mode === "rehearsal" ? "Rehearsal" : "Simulated";
+  const label = !status ? "" : status.mode === "live" ? "Live" : status.mode === "rehearsal" ? "Test" : "Simulated";
   if (!status) return null;
   return (
     <span

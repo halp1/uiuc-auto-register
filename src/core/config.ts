@@ -15,9 +15,11 @@ const MODES: readonly Mode[] = ["simulated", "rehearsal", "live"];
 
 export function parseMode(raw: string | undefined): Mode {
   if (raw === undefined || raw === "") return "simulated";
+  // "test" is the name the UI uses. "rehearsal" stays accepted for existing .env files.
+  if (raw === "test") return "rehearsal";
   if ((MODES as readonly string[]).includes(raw)) return raw as Mode;
   // Fail closed: an unrecognized value must never become "live".
-  throw new Error(`REGISTRATION_MODE must be one of ${MODES.join(", ")}`);
+  throw new Error("REGISTRATION_MODE must be one of simulated, test, live");
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {

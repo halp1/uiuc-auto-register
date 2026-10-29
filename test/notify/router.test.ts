@@ -7,6 +7,16 @@ import type { DiscordSendOptions, DiscordStatus } from "../../src/notify/discord
 import type { OutMessage } from "../../src/notify/format";
 import { NotificationRouter, RATE_LIMIT_MS, type DiscordSender, type PushSenderChannel } from "../../src/notify/router";
 import type { PushPayload, PushResult } from "../../src/notify/webpush";
+import { WebhookChannel, normalizeWebhookUrl, webhookBody, type WebhookSender } from "../../src/notify/webhook";
+
+class FakeWebhook implements WebhookSender {
+  sent: OutMessage[] = [];
+  fail: Error | null = null;
+  async send(message: OutMessage) {
+    if (this.fail) throw this.fail;
+    this.sent.push(message);
+  }
+}
 
 class FakeDiscord implements DiscordSender {
   sent: { message: OutMessage; options: DiscordSendOptions }[] = [];
@@ -44,6 +54,7 @@ let store: Store;
 let settings: Settings;
 let discord: FakeDiscord;
 let push: FakePush;
+let webhook: FakeWebhook;
 let clock: FakeClock;
 let emitted: NewEvent[];
 let router: NotificationRouter;
@@ -65,8 +76,8 @@ function event(kind: AppEvent["kind"], extra: Partial<AppEvent> = {}): AppEvent 
   };
 }
 
-function enable(kind: NotifyEvent, route: { discord?: boolean; push?: boolean }) {
-  settings.routing[kind] = { discord: Boolean(route.discord), push: Boolean(route.push) };
+function enable(kind: NotifyEvent, route: { discord?: boolean; push?: boolean; webhook?: boolean }) {
+  settings.routing[kind] = { discord: Boolean(route.discord), push: Boolean(route.push), webhook: Boolean(route.webhook) };
 }
 
 function approval(extra: Partial<Approval> = {}): Approval {
@@ -90,6 +101,7 @@ beforeEach(() => {
   settings = defaultSettings();
   discord = new FakeDiscord();
   push = new FakePush();
+  webhook = new FakeWebhook();
   clock = new FakeClock();
   emitted = [];
   router = new NotificationRouter({
@@ -98,7 +110,7 @@ beforeEach(() => {
     updateSettings: patch => Object.assign(settings, patch),
     clock,
     events: { emit: e => emitted.push(e) },
-    channels: { discord, push },
+    channels: { discord, push, webhook },
     log: () => {},
   });
 });
@@ -256,5 +268,102 @@ describe("failures and controls", () => {
       statusText: () => "ok",
     };
     expect(() => router.setControl(() => control)).not.toThrow();
+  });
+});
+
+
+describe("discord webhook", () => {
+  const URL_OK = "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+
+  test("off by default for every event", async () => {
+    for (const kind of ["bundle_opened", "registered", "guard_tripped"] as const) router.handle(event(kind, { bundleId: 1 }));
+    router.approvalCreated(approval());
+    await router.flush();
+    expect(webhook.sent).toEqual([]);
+    expect(Object.values(defaultSettings().routing).every(r => r.webhook === false)).toBe(true);
+  });
+
+  test("routes events, approvals, reminders, and resolutions when enabled", async () => {
+    enable("registered", { webhook: true });
+    enable("approval_needed", { webhook: true });
+    router.handle(event("registered", { bundleId: 2, crns: ["59777"] }));
+    router.approvalCreated(approval());
+    router.approvalReminder(approval());
+    router.approvalResolved({ ...approval(), state: "approved" }, "Registered.");
+    await router.flush();
+    expect(webhook.sent.map(m => m.title)).toEqual(["registered", "Approve CS 225 AL1 + AYB?", "Still waiting: CS 225 AL1 + AYB", "CS 225 AL1 + AYB"]);
+    expect(webhook.sent[1]!.body).toContain("Register or skip it in the app.");
+    expect(discord.sent).toEqual([]);
+  });
+
+  test("failures are reported, never thrown", async () => {
+    enable("registered", { webhook: true });
+    webhook.fail = new Error("gone");
+    router.handle(event("registered", { bundleId: 2 }));
+    await router.flush();
+    expect(emitted.some(e => e.title === "Discord webhook notification failed")).toBe(true);
+  });
+
+  test("test() posts to the webhook", async () => {
+    expect(await router.test("webhook")).toEqual({ ok: true, detail: "Posted a test message to the channel." });
+  });
+
+  test("URL validation normalizes Discord hosts and rejects everything else", () => {
+    expect(normalizeWebhookUrl(URL_OK)).toBe(URL_OK);
+    expect(normalizeWebhookUrl(URL_OK.replace("discord.com", "discordapp.com"))).toBe(URL_OK);
+    expect(normalizeWebhookUrl(URL_OK.replace("discord.com/api", "canary.discord.com/api/v10"))).toBe(URL_OK);
+    for (const bad of [
+      "http://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz0123456789",
+      "https://evil.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz0123456789",
+      "https://discord.com.evil.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz0123456789",
+      "https://discord.com/api/webhooks/123/short",
+      "",
+      null,
+    ]) expect(normalizeWebhookUrl(bad)).toBeNull();
+  });
+
+  test("channel posts an embed with mentions disabled and retries once on 429", async () => {
+    const calls: { url: string; body: any }[] = [];
+    let first = true;
+    const channel = new WebhookChannel({
+      settings: () => ({ discordWebhookUrl: URL_OK }),
+      sleep: async () => {},
+      fetch: async (url, init) => {
+        calls.push({ url, body: JSON.parse(String(init.body)) });
+        if (first) {
+          first = false;
+          return new Response(JSON.stringify({ retry_after: 0.5 }), { status: 429 });
+        }
+        return new Response("{}", { status: 200 });
+      },
+    });
+    await channel.send({ title: "Seat open in CS 225 @everyone", body: "CRN 59777", severity: "success", tag: "t" });
+    expect(calls.length).toBe(2);
+    expect(calls[1]!.url).toBe(`${URL_OK}?wait=true`);
+    expect(calls[1]!.body.allowed_mentions).toEqual({ parse: [] });
+    expect(calls[1]!.body.embeds[0]).toMatchObject({ title: "Seat open in CS 225 @everyone", description: "CRN 59777" });
+  });
+
+  test("a deleted webhook gives a clear error, and no URL refuses to send", async () => {
+    const gone = new WebhookChannel({ settings: () => ({ discordWebhookUrl: URL_OK }), fetch: async () => new Response("", { status: 404 }) });
+    await expect(gone.send({ title: "x", body: "", severity: "info", tag: "t" })).rejects.toThrow("deleted");
+    const none = new WebhookChannel({ settings: () => ({ discordWebhookUrl: null }), fetch: async () => new Response("") });
+    await expect(none.send({ title: "x", body: "", severity: "info", tag: "t" })).rejects.toThrow("Add a Discord webhook URL");
+    expect(webhookBody({ title: "t".repeat(300), body: "", severity: "info", tag: "t" }).embeds[0]!.title).toHaveLength(256);
+  });
+
+  test("the webhook URL never reaches the client", () => {
+    const s = new Store(":memory:");
+    s.updateSettings({ discordWebhookUrl: URL_OK });
+    const pub = s.publicSettings() as any;
+    expect(pub.discordWebhookUrl).toBeUndefined();
+    expect(pub.discordWebhookHint).toBe("GHIJ");
+    expect(JSON.stringify(pub)).not.toContain("abcdefghij");
+  });
+
+  test("stored routing from before webhooks gains webhook: false", () => {
+    const s = new Store(":memory:");
+    s.db.query("INSERT INTO settings (key, value) VALUES ('routing', ?)").run(JSON.stringify({ registered: { discord: true, push: false } }));
+    expect(s.getSettings().routing.registered).toEqual({ discord: true, push: false, webhook: false });
   });
 });

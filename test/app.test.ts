@@ -101,6 +101,22 @@ test("settings validation and secret redaction", async () => {
   await call("PUT", "/api/settings", { discordToken: null, discordUserId: null });
 });
 
+test("discord webhook URL: validated, stored, never returned", async () => {
+  const secret = "WebhookSecretToken_0123456789abcdefghijklmnop";
+  const bad = await call("PUT", "/api/settings", { discordWebhookUrl: `https://example.com/api/webhooks/123456789012345678/${secret}` });
+  expect(bad.status).toBe(400);
+  const ok = await call("PUT", "/api/settings", { discordWebhookUrl: `https://discordapp.com/api/webhooks/123456789012345678/${secret}` });
+  expect(ok.status).toBe(200);
+  expect(ok.json.discordWebhookUrl).toBeUndefined();
+  expect(ok.json.discordWebhookHint).toBe("mnop");
+  expect(JSON.stringify((await call("GET", "/api/state")).json)).not.toContain(secret);
+  const routed = await call("PUT", "/api/settings", { routing: { registered: { discord: false, push: false, webhook: true } } });
+  expect(routed.json.routing.registered).toEqual({ discord: false, push: false, webhook: true });
+  expect(routed.json.routing.bundle_opened.webhook).toBe(false);
+  expect((await call("POST", "/api/notify/test/nope")).status).toBe(404);
+  await call("PUT", "/api/settings", { discordWebhookUrl: null, routing: { registered: { discord: false, push: false, webhook: false } } });
+});
+
 test("bad input is rejected with a readable error", async () => {
   const bad = await call("POST", "/api/wanted", { term: "120271", subject: "CS", number: "374", kind: "bundles", bundles: [["123"]] });
   expect(bad.status).toBe(400);

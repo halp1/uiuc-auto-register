@@ -35,10 +35,12 @@ Set `REGISTRATION_MODE` in `.env`, then restart.
 | Mode | What happens |
 |---|---|
 | `simulated` | Pretend Banner. Use the Simulator in Settings to open seats and watch the app react. |
-| `rehearsal` | Logs into your real account and checks everything, but never adds or drops anything. |
+| `test` | Logs into your real account and checks everything, but never adds or drops anything. (`rehearsal` also works.) |
 | `live` | Real registration. You still have to turn on Live in Settings and type the term name to confirm. |
 
-Run a rehearsal before going live: Settings, Rehearsal, Run rehearsal. It shows each step, lists the classes you are already in, and confirms your CRNs exist. Check that the list of classes matches your real schedule. Live can only be turned on within a day of a passing rehearsal for that term.
+Run a test before going live: Settings, Test, Run test. It shows each step, lists the classes you are already in, and confirms your CRNs exist. Check that the list of classes matches your real schedule. Live can only be turned on within a day of a passing test for that term.
+
+If registration for the term has not opened yet, the test still passes as long as Banner shows your time ticket (or you entered one in Settings). It then checks your schedule on a term that is open now, such as the current semester, and shows which one.
 
 ## Watch a course
 
@@ -69,7 +71,7 @@ In Settings, Registration:
 
 ## Time ticket
 
-In rehearsal and live mode the app reads your time ticket from Banner's Prepare for Registration page every 12 hours and fills it in for you. **Check now** in Settings reads it right away. If you type a ticket yourself, automatic detection turns off until you switch it back on.
+In test and live mode the app reads your time ticket from Banner's Prepare for Registration page every 12 hours and fills it in for you. **Check now** in Settings reads it right away. If you type a ticket yourself, automatic detection turns off until you switch it back on.
 
 The app logs in 10 minutes before your ticket and tries to register right at the opening second. It never checks the ticket in the 30 minutes before it opens.
 
@@ -77,13 +79,22 @@ The app logs in 10 minutes before your ticket and tries to register right at the
 
 Everything is off until you turn it on in Settings, Notifications.
 
-**Discord**
+**Discord DM**
 
 1. Create a bot at https://discord.com/developers/applications and copy its token.
 2. Invite the bot to a server you are in (it can only message you if you share a server).
 3. Paste the token and your Discord user ID in Settings and send a test.
 
 You get a direct message with Register and Skip buttons. The bot also answers `/status`, `/pause`, and `/resume`.
+
+**Discord webhook**
+
+A simpler option that posts to one channel, with no bot to set up.
+
+1. In your Discord server, open Server Settings, Integrations, Webhooks, and create a webhook for the channel you want.
+2. Copy its URL, paste it in Settings, and send a test.
+
+Webhook messages have no buttons, so answer approvals on the dashboard or in the bot DM. Keep the URL private: anyone with it can post to that channel.
 
 **Browser push**
 
@@ -102,7 +113,7 @@ Then pick which events go to which channel.
 
 You can use Banner in your own browser while the app is running. Logging in yourself does not sign the app out.
 
-Avoid dropping classes yourself while the app is armed for the same term. The app compares your schedule with its last check before every registration, and a class that disappeared without it will stop it and alert you. Run a rehearsal afterward to refresh what it expects. If you plan to make changes by hand, choose **Pause 30 min** under Session on the dashboard first.
+Avoid dropping classes yourself while the app is armed for the same term. The app compares your schedule with its last check before every registration, and a class that disappeared without it will stop it and alert you. Run a test afterward to refresh what it expects. If you plan to make changes by hand, choose **Pause all** in the top bar first.
 
 ## Deploy on Coolify
 
@@ -115,7 +126,7 @@ If Chromium will not start, add `--cap-add=SYS_ADMIN` under Custom Docker Option
 
 ## Optional checks
 
-Run these yourself with `REGISTRATION_MODE=rehearsal`. They only read.
+Run these yourself with `REGISTRATION_MODE=test`. They only read.
 
 ```sh
 bun run smoke:anon 59777        # live seat count for one CRN, no login

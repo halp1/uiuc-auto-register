@@ -119,14 +119,13 @@ export const api = {
   clearGuard: () => request<{ ok: true }>("POST", "/api/guard/clear"),
   login: () => request<{ ok: true }>("POST", "/api/session/login"),
   logout: () => request<{ ok: true }>("POST", "/api/session/logout"),
-  pauseSession: (minutes: number | null) => request<{ ok: true }>("POST", "/api/session/pause", { minutes }),
   rehearsal: (term: string) => request<RehearsalReport>("POST", "/api/rehearsal", { term }),
   live: (enabled: boolean, confirmText?: string) =>
     request<PublicSettings>("POST", "/api/live", { enabled, confirmText }),
 
   putSettings: (patch: SettingsPatch) => request<PublicSettings>("PUT", "/api/settings", patch),
   detectTicket: (term: string) => request<TicketDetectResult>("POST", "/api/ticket/detect", { term }),
-  testNotify: (channel: "discord" | "push") =>
+  testNotify: (channel: "discord" | "push" | "webhook") =>
     request<{ ok: boolean; detail: string }>("POST", `/api/notify/test/${channel}`),
   vapid: () => request<{ publicKey: string }>("GET", "/api/push/vapid"),
   pushSubscribe: (sub: PushSubscriptionJSON) => request<{ ok: true }>("POST", "/api/push/subscribe", sub),

@@ -96,7 +96,8 @@ export class TicketDetector {
     const term = settings.activeTerm;
     const now = this.deps.clock.now();
     if (!settings.ticketAuto || !term) return DETECT_EVERY_MS;
-    if (settings.sessionPausedUntil && settings.sessionPausedUntil > now) return Math.max(DETECT_FIRST_DELAY_MS, settings.sessionPausedUntil - now + DETECT_FIRST_DELAY_MS);
+    // Logged out by the user: do not log in just to read the ticket. Check now still works.
+    if (settings.sessionLoggedOut) return DETECT_RETRY_MS;
     if (this.quiet(settings, now)) return DETECT_RETRY_MS;
     try {
       await this.detect(term, { manual: false });
@@ -108,10 +109,9 @@ export class TicketDetector {
 
   /** Read the ticket for a term and apply it when auto detection is on (or when asked by hand). */
   detect(term: string, opts: { manual: boolean }): Promise<TicketDetectResult> {
-    if (!this.deps.readTicket) throw new TicketDetectError(409, "Ticket detection needs rehearsal or live mode. Simulated mode never logs in.");
+    if (!this.deps.readTicket) throw new TicketDetectError(409, "Ticket detection needs test or live mode. Simulated mode never logs in.");
     const settings = this.deps.settings();
     const now = this.deps.clock.now();
-    if (settings.sessionPausedUntil && settings.sessionPausedUntil > now) throw new TicketDetectError(409, "The Banner session is paused.");
     if (this.quiet(settings, now)) throw new TicketDetectError(409, "Registration opens soon. The ticket is not checked this close to it.");
     if (this.inFlight) return this.inFlight;
     this.inFlight = this.run(term, opts).finally(() => {

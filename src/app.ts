@@ -132,7 +132,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
       poller: poller.status(),
       session: real
         ? real.sessionStatus()
-        : { state: "cold", since: null, lastKeepaliveAt: null, pausedUntil: s.sessionPausedUntil, lastError: null, stage: null },
+        : { state: "cold", since: null, lastKeepaliveAt: null, loggedOut: s.sessionLoggedOut, lastError: null, stage: null },
       ticket: ticket.status(),
       catalog: catalog.status(s.activeTerm),
       startedAt,
@@ -210,11 +210,14 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
     rehearse: async (term: string): Promise<RehearsalReport> => {
       if (!session) throw new Error("No Banner session in simulated mode");
       const crns = store.armedCrns(term);
-      const report = await session.rehearse(term, crns);
+      const otherTerms = (await catalog.terms().catch(() => [])).map(t => t.code).filter(code => isTermCode(code) && code !== term);
+      const current = settings();
+      const knownTicketAt = current.activeTerm === term ? current.ticketAt : null;
+      const report = await session.rehearse(term, crns, { otherTerms, knownTicketAt });
       events.emit({
         kind: "rehearsal_result",
         severity: report.ok ? "success" : "warning",
-        title: report.ok ? "Rehearsal passed" : "Rehearsal found problems",
+        title: report.ok ? "Test passed" : "Test found problems",
         detail: report.steps.filter(step => !step.ok).map(step => `${step.name}: ${step.detail ?? "failed"}`).join("\n") || null,
         payload: report,
       });

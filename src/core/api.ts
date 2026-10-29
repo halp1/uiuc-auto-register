@@ -63,7 +63,6 @@ export interface Api {
   "POST /api/guard/clear": { res: { ok: true } };
   "POST /api/session/login": { res: { ok: true } };
   "POST /api/session/logout": { res: { ok: true } };
-  "POST /api/session/pause": { body: { minutes: number | null }; res: { ok: true } }; // null = resume now
   "POST /api/ticket/detect": { body: { term: string }; res: TicketDetectResult }; // rehearsal or live mode, read-only; applies the ticket when found
   "POST /api/rehearsal": { body: { term: string }; res: RehearsalReport };
   "POST /api/live": { body: { enabled: boolean; confirmText?: string }; res: PublicSettings }; // confirmText must equal the term label, e.g. "Spring 2027"
@@ -72,7 +71,8 @@ export interface Api {
   // settings
   "GET /api/settings": { res: PublicSettings };
   "PUT /api/settings": { body: SettingsPatch; res: PublicSettings }; // discordToken: string sets, null removes
-  "POST /api/notify/test/:channel": { res: { ok: boolean; detail: string } }; // channel = discord | push
+  "POST /api/notify/test/:channel": { res: { ok: boolean; detail: string } }; // channel = discord | push | webhook
+  // PUT /api/settings accepts discordWebhookUrl: string sets (https://discord.com/api/webhooks/<id>/<token> only), null removes
   "GET /api/push/vapid": { res: { publicKey: string } };
   "POST /api/push/subscribe": { body: PushSubscriptionJSON; res: { ok: true } };
   "POST /api/push/unsubscribe": { body: { endpoint: string }; res: { ok: true } };

@@ -157,7 +157,6 @@ function TermSwitcher() {
             className="group flex h-8 min-w-0 items-center gap-2 rounded-md px-2 text-sm font-medium transition-colors duration-150 ease-out hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-accent disabled:opacity-60"
           >
             <span className="truncate">{termName(terms, active)}</span>
-            {active && <span className="hidden font-mono text-xs text-fg-muted sm:inline">{active}</span>}
             <ChevronsUpDown className="size-4 shrink-0 text-fg-muted group-hover:text-fg" aria-hidden />
           </button>
         </DropdownMenuTrigger>
@@ -166,8 +165,7 @@ function TermSwitcher() {
           <DropdownMenuRadioGroup value={active ?? ""} onValueChange={choose}>
             {terms.map(t => (
               <DropdownMenuRadioItem key={t.code} value={t.code}>
-                <span className="flex-1">{t.description}</span>
-                <span className="font-mono text-xs text-fg-muted">{t.code}</span>
+                {t.description}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>

@@ -52,7 +52,7 @@ await app.start();
 
 const modeLine = {
   simulated: "Simulated (nothing real happens)",
-  rehearsal: "Rehearsal (real login, read only)",
+  rehearsal: "Test (real login, read only)",
   live: "Live (real registration when turned on in Settings)",
 }[config.mode];
 console.log(`UIUC Auto Register running at http://${loopback ? config.host : "localhost"}:${server.port}`);

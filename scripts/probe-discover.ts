@@ -1,4 +1,4 @@
-// User-run discovery probe (rehearsal mode only, strictly read-only).
+// User-run discovery probe (test mode only, strictly read-only).
 //   bun run probe:discover [term ...]        default: Fall 2026 and Spring 2027
 // Logs in with the write interceptor blocking ALL writes, then for each term:
 //   1. asks Banner whether the term is open for registration (term/search, the same read-only call
@@ -23,7 +23,7 @@ import { SSB_PATH } from "../src/banner/registrar/types";
 
 const config = loadConfig();
 if (config.mode !== "rehearsal") {
-  console.error("probe:discover requires REGISTRATION_MODE=rehearsal");
+  console.error("probe:discover requires REGISTRATION_MODE=test");
   process.exit(2);
 }
 if (config.browserBackend !== "chrome") {
