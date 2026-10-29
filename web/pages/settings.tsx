@@ -20,6 +20,7 @@ import { modeNames, useModeSwitch } from "@/lib/mode-switch";
 import { disablePush, enablePush, pushStateFromError, usePushState } from "@/lib/push";
 import { chicagoLocalToIso, countdown, formatDateTime, isoToChicagoLocal, notifyLabels, termName, useNow } from "@/lib/format";
 import { setNavigationGuard } from "@/lib/router";
+import { SecurityCard } from "@/pages/settings-security";
 import { local, useStore } from "@/lib/store";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -1427,6 +1428,7 @@ export function SettingsPage() {
         <PageHeader title="Settings" />
         <div className="flex max-w-3xl flex-col gap-6">
           <AccountCard settings={settings} />
+          <SecurityCard />
           <RegistrationCard settings={settings} />
           <PollingCard settings={settings} />
           <TermCard settings={settings} />

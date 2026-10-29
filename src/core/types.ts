@@ -118,15 +118,54 @@ export interface Route {
   webhook: boolean; // Discord channel webhook
 }
 
-export type OnboardingStep = "account" | "login" | "test" | "live" | "notify" | "done";
-export const ONBOARDING_STEPS: readonly OnboardingStep[] = ["account", "login", "test", "live", "notify", "done"];
+export type OnboardingStep = "security" | "account" | "login" | "test" | "live" | "notify" | "done";
+export const ONBOARDING_STEPS: readonly OnboardingStep[] = ["security", "account", "login", "test", "live", "notify", "done"];
+
+// ---------- app access (who may open this app) ----------
+
+/** "password": a password (and any passkeys) is needed to open the app. "none": anyone who can reach it. */
+export type AuthMode = "none" | "password";
+
+/** GET /api/auth/status. Public, so it says nothing beyond what the sign-in screen needs. */
+export interface AuthStatus {
+  /** null until setup's first step chooses. The app is open until then. */
+  mode: AuthMode | null;
+  /** This browser may use the app (always true when mode is not "password"). */
+  authenticated: boolean;
+  /** At least one passkey is registered for this address, so the sign-in screen offers it. */
+  passkeyLogin: boolean;
+  /** This address can use passkeys at all: https or localhost, never a bare IP like 127.0.0.1. */
+  passkeysSupported: boolean;
+  /** Unused recovery codes. Only when authenticated in password mode, otherwise null. */
+  recoveryCodesLeft: number | null;
+}
+
+/** A signed-in browser, for Settings, Security. */
+export interface AuthSessionInfo {
+  id: string; // public id, not the cookie
+  current: boolean;
+  device: string; // e.g. "Chrome on macOS"
+  ip: string | null;
+  createdAt: number;
+  lastSeenAt: number;
+  remember: boolean;
+}
+
+export interface PasskeyInfo {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  /** The address it works on (passkeys are tied to the domain). */
+  host: string;
+}
 
 export interface Settings {
   mode: Mode; // switched in Settings, the app restarts its Banner side on change
   netid: string | null;
   password: string | null; // encrypted at rest, never sent to the client
   totpSecret: string | null; // encrypted at rest, never sent to the client
-  onboardingStep: OnboardingStep;
+  onboardingStep: OnboardingStep; // starts at "security"
   approvalMode: "auto" | "approve";
   approvalAutoAfterMin: number | null; // approve mode: auto-register after N minutes, null = never
   pollIntervalSec: number; // >= 10

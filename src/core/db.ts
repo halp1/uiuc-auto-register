@@ -92,6 +92,16 @@ const MIGRATIONS: string[] = [
      locked TEXT, backups INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0,
      UNIQUE (plan_id, subject, number));
    ALTER TABLE wanted_courses ADD COLUMN plan_id INTEGER;`,
+  // App access (src/auth/access.ts). Kept out of settings so none of it can reach the client by accident.
+  `CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+   CREATE TABLE auth_sessions (
+     token_hash TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE,
+     created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+     remember INTEGER NOT NULL, device TEXT NOT NULL, ip TEXT);
+   CREATE TABLE passkeys (
+     id TEXT PRIMARY KEY, public_key BLOB NOT NULL, counter INTEGER NOT NULL, transports TEXT NOT NULL DEFAULT '[]',
+     name TEXT NOT NULL, rp_id TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
+   CREATE TABLE recovery_codes (hash TEXT PRIMARY KEY, used_at INTEGER);`,
 ];
 
 export const PLAN_LIMITS = { plansPerTerm: 10, coursesPerPlan: 12, breaks: 20, excludedCrns: 60 } as const;
@@ -115,7 +125,7 @@ export function defaultSettings(): Settings {
     netid: null,
     password: null,
     totpSecret: null,
-    onboardingStep: "account",
+    onboardingStep: "security",
     approvalMode: "auto",
     approvalAutoAfterMin: null,
     pollIntervalSec: 10,

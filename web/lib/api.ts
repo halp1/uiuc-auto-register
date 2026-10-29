@@ -1,6 +1,10 @@
 import type { RehearsalReport } from "../../src/core/contracts";
 import type {
   AnyFilters,
+  AuthMode,
+  AuthSessionInfo,
+  AuthStatus,
+  PasskeyInfo,
   Mode,
   OnboardingStep,
   SetupLoginResult,
@@ -18,16 +22,34 @@ import type {
   WantedCourse,
 } from "../../src/core/types";
 
+import { requireSignIn } from "./auth";
+
 export const isMock = typeof location !== "undefined" && new URLSearchParams(location.search).get("mock") === "1";
 
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** "required" when the server wants this browser to sign in. */
+    readonly auth: string | null = null,
+    /** Seconds to wait after a 429. */
+    readonly retryAfter: number | null = null,
   ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+function field<T>(data: unknown, key: string, type: "string" | "number"): T | null {
+  return data && typeof data === "object" && key in data && typeof (data as Record<string, unknown>)[key] === type
+    ? ((data as Record<string, unknown>)[key] as T)
+    : null;
+}
+
+/** Throws after flipping the app to the sign-in screen when the server says this browser must sign in. */
+function check(error: unknown): never {
+  if (error instanceof ApiError && error.status === 401 && error.auth === "required") requireSignIn();
+  throw error;
 }
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -35,7 +57,12 @@ type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 async function request<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   if (isMock) {
     const mock = await import("../dev/mock");
-    return mock.mockRequest(method, path, body) as Promise<T>;
+    try {
+      return (await mock.mockRequest(method, path, body)) as T;
+    } catch (error) {
+      const e = error as { message: string; status?: number; auth?: string | null; retryAfter?: number | null };
+      check(new ApiError(e.message, e.status ?? 400, e.auth ?? null, e.retryAfter ?? null));
+    }
   }
   let res: Response;
   try {
@@ -59,11 +86,9 @@ async function request<T>(method: Method, path: string, body?: unknown, signal?:
     }
   }
   if (!res.ok) {
-    const message =
-      data && typeof data === "object" && "error" in data && typeof (data as { error: unknown }).error === "string"
-        ? (data as { error: string }).error
-        : `Request failed (${res.status})`;
-    throw new ApiError(message, res.status);
+    const message = field<string>(data, "error", "string") ?? `Request failed (${res.status})`;
+    const retry = field<number>(data, "retryAfter", "number") ?? (Number(res.headers.get("retry-after")) || null);
+    check(new ApiError(message, res.status, field<string>(data, "auth", "string"), retry));
   }
   return data as T;
 }
@@ -116,6 +141,30 @@ export const api = {
   generatePlan: (id: number) => request<PlanGenerateResult>("POST", `/api/plans/${id}/generate`),
   targetPlan: (id: number, picks: PlanPick[]) =>
     request<{ plan: Plan; wanted: WantedCourse[] }>("POST", `/api/plans/${id}/target`, { picks }),
+
+  authStatus: () => request<AuthStatus>("GET", "/api/auth/status"),
+  authLogin: (password: string, remember: boolean) => request<AuthStatus>("POST", "/api/auth/login", { password, remember }),
+  authLogout: () => request<AuthStatus>("POST", "/api/auth/logout"),
+  authConfigure: (body: { mode: AuthMode; password?: string; currentPassword?: string; remember?: boolean }) =>
+    request<{ status: AuthStatus; recoveryCodes: string[] | null }>("POST", "/api/auth/configure", body),
+  authPassword: (currentPassword: string, newPassword: string) =>
+    request<AuthStatus>("POST", "/api/auth/password", { currentPassword, newPassword }),
+  authRecoveryCodes: (currentPassword: string) =>
+    request<{ recoveryCodes: string[] }>("POST", "/api/auth/recovery-codes", { currentPassword }),
+  authRecover: (code: string, newPassword: string, remember: boolean) =>
+    request<AuthStatus>("POST", "/api/auth/recover", { code, newPassword, remember }),
+  authSessions: () => request<AuthSessionInfo[]>("GET", "/api/auth/sessions"),
+  authRevokeSession: (id: string) => request<{ ok: true }>("DELETE", `/api/auth/sessions/${enc(id)}`),
+  authRevokeOthers: () => request<{ ok: true }>("POST", "/api/auth/sessions/revoke-others"),
+  passkeys: () => request<PasskeyInfo[]>("GET", "/api/auth/passkeys"),
+  passkeyRegisterOptions: () => request<unknown>("POST", "/api/auth/passkeys/register/options"),
+  passkeyRegisterVerify: (response: unknown, name?: string) =>
+    request<PasskeyInfo>("POST", "/api/auth/passkeys/register/verify", { response, name }),
+  passkeyRename: (id: string, name: string) => request<PasskeyInfo>("PATCH", `/api/auth/passkeys/${enc(id)}`, { name }),
+  passkeyRemove: (id: string) => request<{ ok: true }>("DELETE", `/api/auth/passkeys/${enc(id)}`),
+  passkeyLoginOptions: () => request<unknown>("POST", "/api/auth/passkeys/login/options"),
+  passkeyLoginVerify: (response: unknown, remember: boolean) =>
+    request<AuthStatus>("POST", "/api/auth/passkeys/login/verify", { response, remember }),
 
   credentials: (body: { netid?: string; password?: string; totpSecret?: string }) =>
     request<PublicSettings>("PUT", "/api/credentials", body),

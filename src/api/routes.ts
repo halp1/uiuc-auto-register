@@ -23,6 +23,7 @@ import {
 import { PlanError } from "../engine/plans";
 import { TicketDetectError } from "../engine/ticket-detect";
 import { normalizeWebhookUrl } from "../notify/webhook";
+import { AuthHttpError, authRoutes, type AuthGate, type AuthServer } from "./auth-routes";
 import type { AppServices } from "./services";
 
 export class HttpError extends Error {
@@ -240,7 +241,7 @@ function snapshot(s: AppServices, terms: Snapshot["terms"]): Snapshot {
   };
 }
 
-function sse(s: AppServices, terms: Snapshot["terms"], req: Request): Response {
+function sse(s: AppServices, terms: Snapshot["terms"], req: Request, gate: AuthGate): Response {
   const encoder = new TextEncoder();
   let unsubscribe = () => {};
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -261,12 +262,23 @@ function sse(s: AppServices, terms: Snapshot["terms"], req: Request): Response {
       };
       send({ type: "hello", snapshot: snapshot(s, terms) });
       unsubscribe = s.bus.subscribe(send);
-      offClose = s.bus.onClose(() => {
+      const end = () => {
         cleanup();
         try {
           controller.close();
         } catch {}
+      };
+      offClose = s.bus.onClose(end);
+      // Signed out, password turned on, or this browser removed in Settings: the stream ends, and the
+      // client's reconnect gets a 401 and shows the sign-in screen.
+      const offAuth = gate.onChange(() => {
+        if (!gate.stillAllowed(req)) end();
       });
+      const prevOff = offClose;
+      offClose = () => {
+        prevOff();
+        offAuth();
+      };
       heartbeat = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(`: ping\n\n`));
@@ -296,7 +308,7 @@ function sse(s: AppServices, terms: Snapshot["terms"], req: Request): Response {
   });
 }
 
-type Handler = (req: Request & { params: Record<string, string> }) => Response | Promise<Response>;
+type Handler = (req: Request & { params: Record<string, string> }, server?: AuthServer) => Response | Promise<Response>;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -336,13 +348,16 @@ export function configureOriginCheck(options: { loopbackOnly: boolean }) {
   originOptions = options;
 }
 
-function wrap(handler: Handler): Handler {
-  return async req => {
+function wrap(handler: Handler, gate: AuthGate): Handler {
+  return async (req, server) => {
     try {
       const refused = checkRequestOrigin(req, originOptions);
       if (refused) return json({ error: refused }, 403);
-      return await handler(req);
+      const locked = gate.check(req);
+      if (locked) return locked;
+      return await handler(req, server);
     } catch (error) {
+      if (error instanceof AuthHttpError) return json({ error: error.message, ...error.extra }, error.status);
       if (error instanceof HttpError || error instanceof PlanError || error instanceof TicketDetectError) return json({ error: error.message }, error.status);
       console.error("api error", req.method, new URL(req.url).pathname, error);
       return json({ error: "Something went wrong on the server. Check the logs." }, 500);
@@ -351,6 +366,7 @@ function wrap(handler: Handler): Handler {
 }
 
 export function apiRoutes(s: AppServices) {
+  const auth = authRoutes(s.access, s.events);
   const hasCredentials = () => credentialsFromSettings(s.settings()) !== null;
   /** Test and Live need the real Banner session and a saved account. */
   const needsRealBanner = () => {
@@ -402,9 +418,10 @@ export function apiRoutes(s: AppServices) {
 
   const r: Record<string, Handler | Record<string, Handler>> = {
     "/healthz": () => new Response("ok"),
+    ...auth.routes,
 
     "/api/state": { GET: async () => json(snapshot(s, await terms())) },
-    "/api/stream": { GET: async req => sse(s, await terms(), req) },
+    "/api/stream": { GET: async req => sse(s, await terms(), req, auth.gate) },
     "/api/events": {
       GET: req => {
         const url = new URL(req.url);
@@ -867,8 +884,8 @@ export function apiRoutes(s: AppServices) {
   const routes: Record<string, any> = {};
   for (const [path, value] of Object.entries(r)) {
     routes[path] = typeof value === "function"
-      ? wrap(value)
-      : Object.fromEntries(Object.entries(value).map(([method, handler]) => [method, wrap(handler)]));
+      ? wrap(value, auth.gate)
+      : Object.fromEntries(Object.entries(value).map(([method, handler]) => [method, wrap(handler, auth.gate)]));
   }
-  return { routes, publishSettings };
+  return { routes, publishSettings, gate: auth.gate };
 }

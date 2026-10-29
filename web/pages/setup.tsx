@@ -1,7 +1,7 @@
-import { ArrowRight, Bell, Check, ExternalLink, Hash, MessageSquare, Send } from "lucide-react";
+import { ArrowRight, Bell, Check, ExternalLink, Hash, KeyRound, MessageSquare, Send } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { RehearsalReport } from "../../src/core/contracts";
-import { NOTIFY_EVENTS, type NotifyEvent, type OnboardingStep, type PublicSettings, type SettingsPatch } from "../../src/core/types";
+import { NOTIFY_EVENTS, type AuthMode, type NotifyEvent, type OnboardingStep, type PublicSettings, type SettingsPatch } from "../../src/core/types";
 import { ConfirmDialog } from "@/components/confirm";
 import {
   CopyCode,
@@ -11,7 +11,9 @@ import {
   type CredentialDraft,
 } from "@/components/credentials";
 import { AppMark } from "@/components/mode";
+import { NewPasswordFields, RecoveryCodes, newPasswordValid } from "@/components/security";
 import { TestReportView } from "@/components/test-report";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input, Label } from "@/components/ui/input";
@@ -19,6 +21,8 @@ import { InlineError } from "@/components/ui/list";
 import { Select } from "@/components/ui/select";
 import { Dot, Status } from "@/components/ui/status-dot";
 import { api } from "@/lib/api";
+import { passkeysSupported, setAuthStatus, useAuthStatus } from "@/lib/auth";
+import { isPasskeyCancel, registerPasskey } from "@/lib/passkey";
 import { termName } from "@/lib/format";
 import { useModeSwitch } from "@/lib/mode-switch";
 import { disablePush, enablePush, isIos, pushStateFromError, usePushState } from "@/lib/push";
@@ -29,6 +33,7 @@ import { cn, errorMessage } from "@/lib/utils";
 type Step = Exclude<OnboardingStep, "done">;
 
 const STEPS: { id: Step; label: string }[] = [
+  { id: "security", label: "Security" },
   { id: "account", label: "Account" },
   { id: "login", label: "Log in" },
   { id: "test", label: "Test" },
@@ -36,7 +41,7 @@ const STEPS: { id: Step; label: string }[] = [
   { id: "notify", label: "Notifications" },
 ];
 
-const NEXT: Record<Step, OnboardingStep> = { account: "login", login: "test", test: "live", live: "notify", notify: "done" };
+const NEXT: Record<Step, OnboardingStep> = { security: "account", account: "login", login: "test", test: "live", live: "notify", notify: "done" };
 
 /** Move the saved onboarding step forward (never backward when revisiting earlier steps). */
 async function advance(from: Step, settings: PublicSettings) {
@@ -109,6 +114,7 @@ export function SetupPage({ step }: { step: OnboardingStep }) {
         </nav>
 
         <main className="w-full min-w-0 max-w-[560px]">
+          {current === "security" && <SecurityStep settings={settings} />}
           {current === "account" && <AccountStep settings={settings} />}
           {current === "login" && <LoginStep settings={settings} />}
           {current === "test" && <TestStep settings={settings} />}
@@ -178,6 +184,191 @@ function ExtLink({ href, children }: { href: string; children: ReactNode }) {
 
 function Mono({ children }: { children: ReactNode }) {
   return <code className="rounded border border-border-strong bg-black px-1 font-mono text-[0.75rem] text-fg">{children}</code>;
+}
+
+// ---------- security ----------
+
+function ChoiceCard({
+  selected,
+  onSelect,
+  title,
+  badge,
+  description,
+  children,
+}: {
+  selected: boolean;
+  onSelect: () => void;
+  title: string;
+  badge?: string;
+  description: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={cn("overflow-hidden rounded-lg border bg-surface transition-colors duration-150", selected ? "border-border-hover" : "border-border")}>
+      <label className="flex cursor-pointer items-start gap-3 p-4 transition-colors duration-150 hover:bg-hover">
+        <input type="radio" name="auth-mode" checked={selected} onChange={onSelect} className="peer sr-only" />
+        <span
+          aria-hidden
+          className={cn(
+            "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors duration-150 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent",
+            selected ? "border-fg" : "border-border-hover",
+          )}
+        >
+          {selected && <span className="size-2 rounded-full bg-fg" />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2 text-sm font-medium">
+            {title}
+            {badge && <Badge variant="muted" className="h-5 px-2 text-[0.6875rem]">{badge}</Badge>}
+          </span>
+          <span className="mt-0.5 block text-[0.8125rem] text-fg-muted">{description}</span>
+        </span>
+      </label>
+      {selected && children && <div className="flex flex-col gap-4 border-t border-border bg-black p-4">{children}</div>}
+    </div>
+  );
+}
+
+type SecurityPhase = "choose" | "codes" | "passkey";
+
+function SecurityStep({ settings }: { settings: PublicSettings }) {
+  const auth = useAuthStatus();
+  const [choice, setChoice] = useState<AuthMode | null>(auth?.mode ?? null);
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [phase, setPhase] = useState<SecurityPhase>("choose");
+  const [codes, setCodes] = useState<string[]>([]);
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [passkeyAdded, setPasskeyAdded] = useState<string | null>(null);
+  const already = auth?.mode != null;
+
+  async function run(name: string, fn: () => Promise<void>) {
+    setBusy(name);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      if (!isPasskeyCancel(e)) setError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const next = () => run("next", () => advance("security", settings));
+
+  const configure = () =>
+    run("configure", async () => {
+      if (choice === "none") {
+        const res = await api.authConfigure({ mode: "none" });
+        setAuthStatus(res.status);
+        await advance("security", settings);
+        return;
+      }
+      if (!newPasswordValid(password, confirm)) return;
+      const res = await api.authConfigure({ mode: "password", password, remember: true });
+      setAuthStatus(res.status);
+      setPassword("");
+      setConfirm("");
+      setCodes(res.recoveryCodes ?? []);
+      setPhase(res.recoveryCodes?.length ? "codes" : passkeysSupported() ? "passkey" : "choose");
+      if (!res.recoveryCodes?.length && !passkeysSupported()) await advance("security", settings);
+    });
+
+  if (phase === "codes")
+    return (
+      <section>
+        <StepHeader title="Save your recovery codes">Each code works once if you forget your password. They won't be shown again.</StepHeader>
+        <RecoveryCodes codes={codes} saved={saved} onSavedChange={setSaved} />
+        <StepFooter error={error}>
+          <ContinueButton
+            disabled={!saved}
+            loading={busy === "next"}
+            onClick={() => (passkeysSupported() ? setPhase("passkey") : next())}
+          />
+        </StepFooter>
+      </section>
+    );
+
+  if (phase === "passkey")
+    return (
+      <section>
+        <StepHeader title="Add a passkey">Sign in with your fingerprint, face, or device PIN instead of typing the password.</StepHeader>
+        {passkeyAdded ? (
+          <div role="status" className="flex items-center gap-3 rounded-lg border border-[#1d4d43] bg-[#06150f] p-4 text-sm">
+            <Check className="size-4 text-ready" aria-hidden />
+            Added {passkeyAdded}.
+          </div>
+        ) : (
+          <Button variant="primary" onClick={() => run("passkey", async () => setPasskeyAdded((await registerPasskey()).name))} loading={busy === "passkey"}>
+            {busy !== "passkey" && <KeyRound aria-hidden />}
+            Add a passkey
+          </Button>
+        )}
+        <StepFooter error={error}>
+          {passkeyAdded ? (
+            <ContinueButton onClick={next} loading={busy === "next"} />
+          ) : (
+            <Button variant="ghost" onClick={next} disabled={busy !== null}>
+              Skip
+            </Button>
+          )}
+        </StepFooter>
+      </section>
+    );
+
+  return (
+    <section>
+      <StepHeader title="Protect this app">This app can sign in to Banner as you. Anyone who opens it can change your classes.</StepHeader>
+      {already ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4">
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <Check className="size-4 text-ready" aria-hidden />
+            {auth?.mode === "password" ? "Password" : "No password"}
+          </p>
+          <p className="text-[0.8125rem] text-fg-muted">Change in Settings later</p>
+        </div>
+      ) : (
+        <div role="radiogroup" aria-label="Protection" className="flex flex-col gap-3">
+          <ChoiceCard
+            selected={choice === "password"}
+            onSelect={() => setChoice("password")}
+            title="Password"
+            badge="Recommended"
+            description="You'll sign in with a password. You can add a passkey after."
+          >
+            <form
+              id="security-form"
+              onSubmit={e => {
+                e.preventDefault();
+                configure();
+              }}
+            >
+              <NewPasswordFields idPrefix="setup-auth" password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} autoFocus />
+            </form>
+          </ChoiceCard>
+          <ChoiceCard
+            selected={choice === "none"}
+            onSelect={() => setChoice("none")}
+            title="No password"
+            description="Anyone who can open this page can use it. Fine if only you can reach it, like on your own computer."
+          />
+        </div>
+      )}
+      <StepFooter error={error}>
+        {already ? (
+          <ContinueButton onClick={next} loading={busy === "next"} />
+        ) : (
+          <ContinueButton
+            onClick={configure}
+            loading={busy === "configure"}
+            disabled={!choice || (choice === "password" && !newPasswordValid(password, confirm))}
+          />
+        )}
+      </StepFooter>
+    </section>
+  );
 }
 
 // ---------- a) account ----------

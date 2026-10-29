@@ -1,3 +1,4 @@
+import type { AccessControl } from "../auth/access";
 import type { Bus } from "../core/bus";
 import type { Config } from "../core/config";
 import type { CatalogService, ControlApi, Notifier, OrchestratorApi, PollerApi, RehearsalReport, SessionManager, SimBannerApi, TicketApi } from "../core/contracts";
@@ -49,4 +50,6 @@ export interface AppServices {
   discordStatus(): { state: string; detail: string | null };
   /** Rebuild the app in the saved mode. Absent in tests. */
   restart?: () => void;
+  /** Who may open the app (password, passkeys, sessions). */
+  access: AccessControl;
 }

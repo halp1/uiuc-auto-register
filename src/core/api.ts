@@ -4,6 +4,9 @@
 import type {
   AnyFilters,
   AppEvent,
+  AuthMode,
+  AuthSessionInfo,
+  AuthStatus,
   CourseDetail,
   Mode,
   OnboardingStep,
@@ -11,6 +14,7 @@ import type {
   PlanCourse,
   PlanGenerateResult,
   PlanPick,
+  PasskeyInfo,
   PublicSettings,
   SearchHit,
   SetupLoginResult,
@@ -77,6 +81,32 @@ export interface Api {
   "POST /api/notify/test/:channel": { res: { ok: boolean; detail: string } }; // channel = discord | push | webhook
   // PUT /api/settings accepts discordWebhookUrl: string sets (https://discord.com/api/webhooks/<id>/<token> only), null removes
   "GET /api/push/vapid": { res: { publicKey: string } };
+
+  // app access. Every other /api route answers 401 { error, auth: "required" } when mode is "password" and
+  // this browser has no session. Sessions are an HttpOnly cookie. 429 { error, retryAfter } after repeated failures.
+  "GET /api/auth/status": { res: AuthStatus }; // public
+  "POST /api/auth/login": { body: { password: string; remember: boolean }; res: AuthStatus }; // public
+  "POST /api/auth/logout": { res: AuthStatus };
+  // Choose or change the mode. Turning on "password" returns recovery codes once and signs this browser in.
+  // currentPassword is required when a password is already set. Turning it off removes passkeys, codes and sessions.
+  "POST /api/auth/configure": {
+    body: { mode: AuthMode; password?: string; currentPassword?: string; remember?: boolean };
+    res: { status: AuthStatus; recoveryCodes: string[] | null };
+  };
+  "POST /api/auth/password": { body: { currentPassword: string; newPassword: string }; res: AuthStatus }; // signs out other browsers
+  "POST /api/auth/recovery-codes": { body: { currentPassword: string }; res: { recoveryCodes: string[] } }; // replaces old codes
+  "POST /api/auth/recover": { body: { code: string; newPassword: string; remember: boolean }; res: AuthStatus }; // public, signs out everyone else
+  "GET /api/auth/sessions": { res: AuthSessionInfo[] };
+  "DELETE /api/auth/sessions/:id": { res: { ok: true } };
+  "POST /api/auth/sessions/revoke-others": { res: { ok: true } };
+  // Passkeys (WebAuthn). Need https or localhost. Options are @simplewebauthn JSON for startRegistration/startAuthentication.
+  "GET /api/auth/passkeys": { res: PasskeyInfo[] };
+  "POST /api/auth/passkeys/register/options": { res: unknown };
+  "POST /api/auth/passkeys/register/verify": { body: { response: unknown; name?: string }; res: PasskeyInfo };
+  "PATCH /api/auth/passkeys/:id": { body: { name: string }; res: PasskeyInfo };
+  "DELETE /api/auth/passkeys/:id": { res: { ok: true } };
+  "POST /api/auth/passkeys/login/options": { res: unknown }; // public
+  "POST /api/auth/passkeys/login/verify": { body: { response: unknown; remember: boolean }; res: AuthStatus }; // public
 
   // account and setup
   // Values are never echoed. netid "abc2@illinois.edu" is stored as "abc2". Omitted fields stay as they are.

@@ -3,6 +3,9 @@ import type { RehearsalReport } from "../../src/core/contracts";
 import {
   NOTIFY_EVENTS,
   type AppEvent,
+  type AuthSessionInfo,
+  type AuthStatus,
+  type PasskeyInfo,
   type Approval,
   type Bundle,
   type CourseDetail,
@@ -316,7 +319,7 @@ let settings: PublicSettings = {
   netid: fresh ? null : "jdoe2",
   passwordSet: !fresh,
   totpSet: !fresh,
-  onboardingStep: fresh ? "account" : "done",
+  onboardingStep: fresh ? "security" : "done",
   approvalMode: "approve",
   approvalAutoAfterMin: 10,
   pollIntervalSec: 10,
@@ -515,7 +518,16 @@ function detail(subject: string, number: string): CourseDetail | null {
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-class MockError extends Error {}
+class MockError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400,
+    readonly auth: string | null = null,
+    readonly retryAfter: number | null = null,
+  ) {
+    super(message);
+  }
+}
 
 let loginTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -544,6 +556,8 @@ export async function mockRequest(method: string, path: string, body: any): Prom
   const key = `${method} ${p}`;
   let m: RegExpExecArray | null;
 
+  if (p.startsWith("/api/auth/")) return authRequest(method, p, body);
+  if (auth.mode === "password" && !auth.authenticated) throw new MockError("Sign in first.", 401, "required");
   if (key === "GET /api/state") return snapshot();
   if (p.startsWith("/api/plans")) return planRequest(method, url, body);
   if (key === "GET /api/events") {
@@ -1198,4 +1212,136 @@ async function planRequest(method: string, url: URL, body: any): Promise<unknown
     return { plan: clone(plan), wanted: changed };
   }
   throw new MockError(`Mock has no plan handler for ${method} ${p}`);
+}
+
+// ---------- app access (auth) ----------
+
+/** ?auth=signin shows the sign-in screen. ?setup=1 starts before a mode is chosen. */
+const auth: AuthStatus = {
+  mode: fresh ? null : "password",
+  authenticated: params.get("auth") !== "signin",
+  passkeyLogin: !fresh,
+  passkeysSupported: true,
+  recoveryCodesLeft: fresh ? null : 8,
+};
+let authFailures = 0;
+let lockedUntil = 0;
+
+const fakeCodes = () =>
+  Array.from({ length: 10 }, () =>
+    Array.from({ length: 2 }, () => Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, "X")).join("-"),
+  );
+
+let passkeys: PasskeyInfo[] = fresh
+  ? []
+  : [
+      { id: "pk1", name: "Chrome on macOS", createdAt: now - 6 * 86400_000, lastUsedAt: now - 2 * 3600_000, host: "localhost" },
+      { id: "pk2", name: "iPhone", createdAt: now - 3 * 86400_000, lastUsedAt: null, host: "localhost" },
+    ];
+let authSessions: AuthSessionInfo[] = [
+  { id: "s1", current: true, device: "Chrome on macOS", ip: "127.0.0.1", createdAt: now - 6 * 86400_000, lastSeenAt: now, remember: true },
+  { id: "s2", current: false, device: "Safari on iOS", ip: "10.0.0.24", createdAt: now - 3 * 86400_000, lastSeenAt: now - 5 * 3600_000, remember: true },
+  { id: "s3", current: false, device: "Firefox on Windows", ip: "73.44.120.9", createdAt: now - 20 * 86400_000, lastSeenAt: now - 9 * 86400_000, remember: false },
+];
+
+const authOut = (): AuthStatus => ({
+  ...auth,
+  recoveryCodesLeft: auth.mode === "password" && auth.authenticated ? auth.recoveryCodesLeft : null,
+});
+
+function checkPassword(password: string) {
+  if (Date.now() < lockedUntil) throw new MockError("Too many tries.", 429, null, Math.ceil((lockedUntil - Date.now()) / 1000));
+  if (password !== "password") {
+    authFailures++;
+    if (authFailures >= 3) {
+      authFailures = 0;
+      lockedUntil = Date.now() + 30_000;
+      throw new MockError("Too many tries.", 429, null, 30);
+    }
+    throw new MockError("Wrong password.", 401);
+  }
+  authFailures = 0;
+}
+
+async function authRequest(method: string, p: string, body: any): Promise<unknown> {
+  await wait(300);
+  const key = `${method} ${p}`;
+  let m: RegExpExecArray | null;
+  if (key === "GET /api/auth/status") return authOut();
+  if (key === "POST /api/auth/login") {
+    checkPassword(String(body.password ?? ""));
+    auth.authenticated = true;
+    return authOut();
+  }
+  if (key === "POST /api/auth/passkeys/login/options") return { challenge: "mock" };
+  if (key === "POST /api/auth/passkeys/login/verify") {
+    auth.authenticated = true;
+    return authOut();
+  }
+  if (key === "POST /api/auth/recover") {
+    if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(String(body.code ?? "").trim())) throw new MockError("That recovery code doesn't work.", 401);
+    if (String(body.newPassword ?? "").length < 8) throw new MockError("Use at least 8 characters.");
+    auth.authenticated = true;
+    auth.recoveryCodesLeft = Math.max(0, (auth.recoveryCodesLeft ?? 1) - 1);
+    return authOut();
+  }
+  if (auth.mode === "password" && !auth.authenticated) throw new MockError("Sign in first.", 401, "required");
+  if (key === "POST /api/auth/logout") {
+    auth.authenticated = auth.mode !== "password";
+    return authOut();
+  }
+  if (key === "POST /api/auth/configure") {
+    if (body.mode === "none") {
+      if (auth.mode === "password") checkPassword(String(body.currentPassword ?? ""));
+      Object.assign(auth, { mode: "none", authenticated: true, passkeyLogin: false, recoveryCodesLeft: null });
+      passkeys = [];
+      authSessions = authSessions.filter(x => x.current);
+      return { status: authOut(), recoveryCodes: null };
+    }
+    if (String(body.password ?? "").length < 8) throw new MockError("Use at least 8 characters.");
+    const codes = fakeCodes();
+    Object.assign(auth, { mode: "password", authenticated: true, recoveryCodesLeft: codes.length });
+    return { status: authOut(), recoveryCodes: codes };
+  }
+  if (key === "POST /api/auth/password") {
+    checkPassword(String(body.currentPassword ?? ""));
+    authSessions = authSessions.filter(x => x.current);
+    return authOut();
+  }
+  if (key === "POST /api/auth/recovery-codes") {
+    checkPassword(String(body.currentPassword ?? ""));
+    const codes = fakeCodes();
+    auth.recoveryCodesLeft = codes.length;
+    return { recoveryCodes: codes };
+  }
+  if (key === "GET /api/auth/sessions") return clone(authSessions);
+  if ((m = /^DELETE \/api\/auth\/sessions\/(.+)$/.exec(key))) {
+    authSessions = authSessions.filter(x => x.id !== decodeURIComponent(m![1]!));
+    return { ok: true };
+  }
+  if (key === "POST /api/auth/sessions/revoke-others") {
+    authSessions = authSessions.filter(x => x.current);
+    return { ok: true };
+  }
+  if (key === "GET /api/auth/passkeys") return clone(passkeys);
+  if (key === "POST /api/auth/passkeys/register/options") return { challenge: "mock" };
+  if (key === "POST /api/auth/passkeys/register/verify") {
+    const pk: PasskeyInfo = { id: `pk${Date.now()}`, name: body.name || "Passkey", createdAt: Date.now(), lastUsedAt: null, host: location.hostname };
+    passkeys.push(pk);
+    auth.passkeyLogin = true;
+    return pk;
+  }
+  if ((m = /^(PATCH|DELETE) \/api\/auth\/passkeys\/(.+)$/.exec(key))) {
+    const id = decodeURIComponent(m[2]!);
+    const pk = passkeys.find(x => x.id === id);
+    if (!pk) throw new MockError("That passkey is gone.", 404);
+    if (m[1] === "DELETE") {
+      passkeys = passkeys.filter(x => x !== pk);
+      auth.passkeyLogin = passkeys.length > 0;
+      return { ok: true };
+    }
+    pk.name = String(body.name ?? pk.name).trim() || pk.name;
+    return clone(pk);
+  }
+  throw new MockError(`Mock has no auth handler for ${key}`, 404);
 }

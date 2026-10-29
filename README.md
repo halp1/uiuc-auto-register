@@ -10,7 +10,7 @@ Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and op
 docker run -d --name uiuc-auto-register --restart unless-stopped --cap-add=SYS_ADMIN -p 127.0.0.1:3000:3000 -v uiuc-auto-register:/data ghcr.io/halp1/uiuc-auto-register
 ```
 
-Open http://localhost:3000. The setup walks you through the rest: your Illinois login, an authenticator key for the app, a test run, turning on Live, notifications, and your first schedule.
+Open http://localhost:3000. The setup walks you through the rest: a password for the app, your Illinois login, an authenticator key for the app, a test run, turning on Live, notifications, and your first schedule.
 
 To run it on a server instead, see [Deploy on Coolify](#deploy-on-coolify).
 
@@ -22,6 +22,22 @@ docker rm -f uiuc-auto-register
 ```
 
 Then run the `docker run` command again. Your settings and courses are kept in the `uiuc-auto-register` volume.
+
+## Signing in to the app
+
+The first setup step asks whether the app needs a password. Use one unless you're the only person who can reach the page. You can change this later in Settings, Security.
+
+- With a password, you can also add a passkey to sign in with your fingerprint, face, or device PIN. Passkeys only work on an https address or `localhost`, and each one is tied to the address you added it on.
+- Setup gives you 8 recovery codes. Each one resets the password once if you forget it.
+- Settings, Security lists the browsers that are signed in, and you can sign any of them out.
+
+If you are locked out with no codes left, run this on the computer or server running the app. It turns the password off and keeps everything else.
+
+```sh
+docker exec uiuc-auto-register bun run reset-auth --data /data
+```
+
+Without Docker, run `bun run reset-auth` in the app folder.
 
 ## Your login
 
@@ -116,8 +132,10 @@ Avoid dropping classes yourself while the app is armed for the same term. The ap
 1. Create a new resource from this repository using the Dockerfile.
 2. Add a persistent volume mounted at `/data`.
 3. Under Configuration, General, Custom Docker Options, add `--cap-add=SYS_ADMIN`. Chrome inside the container needs it.
-4. Expose port 3000 and put the domain behind Cloudflare Access. The app has no login of its own, and anyone who can open it can see and change your settings.
-5. Open the domain and follow the setup.
+4. Expose port 3000 on an https domain. Cloudflare Access in front of it is a good extra layer.
+5. Open the domain right away and follow the setup. Until you finish its first step, anyone who opens the page can set the password.
+
+To reset a forgotten password, open the app's terminal in Coolify and run `bun run reset-auth --data /data`.
 
 ## Run without Docker
 

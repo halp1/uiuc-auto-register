@@ -13,6 +13,8 @@ import { PlanPage } from "@/pages/plan";
 import { SearchPage } from "@/pages/search";
 import { SettingsPage } from "@/pages/settings";
 import { SetupPage } from "@/pages/setup";
+import { SignInPage } from "@/pages/signin";
+import { useAuthGate } from "@/lib/auth";
 
 function Loading() {
   return (
@@ -66,6 +68,21 @@ function allowedSetupStep(requested: string | null, current: OnboardingStep): On
 }
 
 export function App() {
+  const gate = useAuthGate();
+  if (gate === "checking") return <BootSplash />;
+  if (gate === "signin") return <SignInPage />;
+  return <AuthedApp />;
+}
+
+function BootSplash() {
+  return (
+    <div className="flex min-h-dvh items-center justify-center" aria-busy aria-label="Loading">
+      <Skeleton className="size-9 rounded-lg" />
+    </div>
+  );
+}
+
+function AuthedApp() {
   const route = useRoute();
   const ready = useStore(s => s.status !== null);
   const loadError = useStore(s => s.loadError);

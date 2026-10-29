@@ -24,6 +24,7 @@ import { TicketScheduler } from "./engine/ticket";
 import { TicketDetector } from "./engine/ticket-detect";
 import { NotificationRouter } from "./notify/router";
 import { loadRealBanner, type RealBanner } from "./real-banner";
+import { AccessControl } from "./auth/access";
 
 export interface App {
   services: AppServices;
@@ -46,6 +47,7 @@ export async function createApp(config: Config, options: AppOptions = {}): Promi
   const events = new Events(store, bus);
   const startedAt = Date.now();
   const settings = () => store.getSettings();
+  const access = new AccessControl(store);
 
   // Live authorization never survives a mode change or a hot-reloading dev server.
   if ((config.mode !== "live" || config.hotReload) && store.getSettings().liveEnabled) store.updateSettings({ liveEnabled: false, liveTerm: null });
@@ -239,6 +241,7 @@ export async function createApp(config: Config, options: AppOptions = {}): Promi
     detectTicket: term => ticketDetector.detect(term, { manual: true }),
     discordStatus: () => notifier.discordStatus(),
     restart: options.restart,
+    access,
   };
 
   let tick: ReturnType<typeof setInterval> | undefined;

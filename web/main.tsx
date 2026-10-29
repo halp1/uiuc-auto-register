@@ -1,9 +1,9 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./app";
 import { TooltipProvider } from "./components/ui/tooltip";
-import { start } from "./lib/store";
+import { boot } from "./lib/store";
 
-start();
+boot();
 
 const root = document.getElementById("root")!;
 createRoot(root).render(

@@ -12,6 +12,7 @@ import type {
   WantedCourse,
 } from "../../src/core/types";
 import { api, isMock } from "./api";
+import { getAuth, onSignOut, setAuthStatus } from "./auth";
 import { errorMessage } from "./utils";
 
 export type Connection = "connecting" | "open" | "reconnecting";
@@ -196,6 +197,14 @@ let source: EventSource | null = null;
 let retry = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
+let mockStreamStarted = false;
+
+function stopStream() {
+  source?.close();
+  source = null;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+}
 
 function connectStream() {
   if (isMock) return;
@@ -213,16 +222,36 @@ function connectStream() {
       console.error("bad stream frame", error);
     }
   };
-  es.onerror = () => {
+  es.onerror = async () => {
     es.close();
     if (source !== es) return;
     source = null;
     set({ connection: "reconnecting" });
+    // EventSource hides the status code. A revoked session looks like any other drop, so ask.
+    try {
+      const auth = await api.authStatus();
+      setAuthStatus(auth);
+      if (auth.mode === "password" && !auth.authenticated) return;
+    } catch {
+      // Server unreachable. Keep retrying below.
+    }
     const delay = Math.min(30_000, 1000 * 2 ** retry) + Math.random() * 500;
     retry += 1;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = setTimeout(connectStream, delay);
   };
+}
+
+/** Ask whether this browser may use the app. Starts the store when it may. */
+export async function boot() {
+  try {
+    setAuthStatus(await api.authStatus());
+  } catch (error) {
+    // An unreachable server shows the normal load error once start() runs.
+    setAuthStatus({ mode: null, authenticated: true, passkeyLogin: false, passkeysSupported: false, recoveryCodesLeft: null });
+    set({ loadError: errorMessage(error) });
+  }
+  if (getAuth().gate === "ok") await start();
 }
 
 export async function start() {
@@ -232,16 +261,33 @@ export async function start() {
     applySnapshot(await api.state());
     set({ connection: isMock ? "open" : "connecting" });
   } catch (error) {
+    if (getAuth().gate === "signin") {
+      started = false;
+      return;
+    }
     set({ loadError: errorMessage(error) });
   }
   if (isMock) {
-    const mock = await import("../dev/mock");
-    mock.startMockStream(apply);
+    if (!mockStreamStarted) {
+      mockStreamStarted = true;
+      const mock = await import("../dev/mock");
+      mock.startMockStream(apply);
+    }
     set({ connection: "open" });
     return;
   }
   connectStream();
 }
+
+/** Back to the sign-in screen: drop the stream and the loaded state. */
+export function signedOut() {
+  stopStream();
+  started = false;
+  state = { ...state, status: null, settings: null, wanted: [], approvals: [], events: [], plans: {}, connection: "connecting", loadError: null };
+  for (const listener of listeners) listener();
+}
+
+onSignOut(() => signedOut());
 
 export async function reload() {
   try {
