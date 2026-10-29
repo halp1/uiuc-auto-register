@@ -12,7 +12,7 @@ function setup(extra: Partial<FlowOptions> = {}) {
   const visited: PageName[] = [];
   const flow = illinoisFlow({ password: CREDS.password, expectedCode: () => totp(SECRET, clock.now()), visited, ...extra });
   const browser = new FakeBrowser(flow.start);
-  return { clock, browser, visited };
+  return { clock, browser, visited, flow };
 }
 
 function passwordTypedOn(browser: FakeBrowser): string[] {
@@ -292,6 +292,139 @@ describe("login", () => {
       },
     });
     expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
+    expect(browser.typed.some(t => t.field === "otc")).toBe(false);
+  });
+
+  test.each([
+    "Use a verification code",
+    "Use a verification code from my mobile app",
+    "Code from my authenticator app",
+    "Enter a code from an authenticator app",
+  ])("selects a direct app-code picker without the exact heading: %s", async label => {
+    let methodClicks = 0;
+    const { clock, browser, flow } = setup({
+      override: {
+        push: () => ({
+          url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
+          flags: { verifyIdentity: false },
+          actions: [{ label, kind: "button", onClick: b => {
+            methodClicks++;
+            b.show(flow.pages.otc(b));
+          } }],
+        }),
+      },
+    });
+    const stages: string[] = [];
+    await login(browser, CREDS, { clock, onStage: s => stages.push(s) });
+    expect(methodClicks).toBe(1);
+    expect(stages).toContain("mfa_method");
+    expect(stages.at(-1)).toBe("ready");
+    expect(passwordTypedOn(browser)).toHaveLength(1);
+    expect(browser.typed.filter(t => t.field === "otc")).toHaveLength(1);
+  });
+
+  test("recognizes the alternate verification option link", async () => {
+    let otherWayClicks = 0;
+    const { clock, browser, flow } = setup({
+      override: {
+        push: () => ({
+          url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
+          prompt: "push_approval",
+          actions: [{ label: "Use a different verification option", kind: "button", onClick: b => {
+            otherWayClicks++;
+            b.show(flow.pages.methods(b));
+          } }],
+        }),
+      },
+    });
+    await login(browser, CREDS, { clock });
+    expect(otherWayClicks).toBe(1);
+    expect(browser.typed.filter(t => t.field === "otc")).toHaveLength(1);
+  });
+
+  test.each([
+    "Text a verification code to my phone",
+    "Email a verification code",
+    "Call me with a verification code",
+  ])("never selects an SMS/email/phone method as an app code: %s", async label => {
+    let methodClicks = 0;
+    const { clock, browser } = setup({
+      override: {
+        push: () => ({
+          url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
+          flags: { verifyIdentity: true },
+          actions: [{ label, kind: "button", onClick: () => {
+            methodClicks++;
+          } }],
+        }),
+      },
+    });
+    const diagnostics: LoginDiagnostic[] = [];
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
+    expect(methodClicks).toBe(0);
+    expect(browser.typed.some(t => t.field === "otc")).toBe(false);
+    expect(diagnostics.at(-1)?.appCodeOptionAvailable).toBe(false);
+  });
+
+  test.each([
+    ["security_info_required", "security_info_required"],
+    ["password_change_required", "password_change_required"],
+    ["access_blocked", "access_blocked"],
+    ["sign_in_error", "microsoft_sign_in_error"],
+    ["captcha", "captcha_required"],
+  ] as const)("stops on %s before clicking a code-looking setup/security action", async (prompt, expected) => {
+    let clicks = 0;
+    const { clock, browser } = setup({
+      override: {
+        push: () => ({
+          url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
+          prompt,
+          actions: [{ label: "Use a verification code", kind: "button", onClick: () => {
+            clicks++;
+          } }],
+        }),
+      },
+    });
+    const diagnostics: LoginDiagnostic[] = [];
+    const error = await login(browser, CREDS, { clock, onDiagnostic: d => diagnostics.push(d) }).catch(e => e);
+    expect(error).toBeInstanceOf(HumanActionRequired);
+    expect(error.reason).toBe(expected);
+    expect(clicks).toBe(0);
+    expect(browser.typed.some(t => t.field === "otc")).toBe(false);
+    expect(diagnostics.at(-1)).toMatchObject({ reason: "blocked", prompt });
+  });
+
+  test.each([
+    ["captcha", "captcha_required"],
+    ["security_info_required", "security_info_required"],
+    ["password_change_required", "password_change_required"],
+  ] as const)("does not type into a credential form while %s is showing", async (prompt, expected) => {
+    const { clock, browser } = setup({
+      override: {
+        password: () => ({
+          url: "https://login.microsoftonline.com/common/login",
+          prompt,
+          fields: { passwd: {} },
+          actions: [{ label: "Sign in", kind: "submit", onClick: () => {} }],
+        }),
+      },
+    });
+    expect(await reason(login(browser, CREDS, { clock }))).toBe(expected);
+    expect(passwordTypedOn(browser)).toEqual([]);
+  });
+
+  test("never types a TOTP into a delivered SMS/email code challenge", async () => {
+    const { clock, browser } = setup({
+      override: {
+        push: () => ({
+          url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
+          prompt: "sms_or_email_code",
+          fields: { otc: {} },
+          actions: [{ label: "Verify", kind: "submit", onClick: () => {} }],
+        }),
+      },
+    });
+    expect(await reason(login(browser, CREDS, { clock }))).toBe("unsupported_mfa_method");
     expect(browser.typed.some(t => t.field === "otc")).toBe(false);
   });
 

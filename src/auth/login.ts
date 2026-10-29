@@ -72,6 +72,12 @@ export type LoginReason =
   | "field_clear_failed"
   | "focus_failed"
   | "button_not_found"
+  | "captcha_required"
+  | "security_info_required"
+  | "password_change_required"
+  | "access_blocked"
+  | "microsoft_sign_in_error"
+  | "unsupported_mfa_method"
   | "unsupported_mfa_or_timeout";
 
 export class LoginError extends Error {
@@ -109,7 +115,7 @@ export function fullNetId(netid: string): string {
 }
 
 export interface LoginDiagnostic {
-  reason: "waiting" | "timeout";
+  reason: "waiting" | "timeout" | "blocked";
   elapsedMs: number;
   stage: LoginStage | null;
   page: "unavailable" | "banner" | "identity_provider" | "microsoft" | "auth" | "known_other" | "unknown";
@@ -122,6 +128,9 @@ export interface LoginDiagnostic {
   emptyPassword: boolean | null;
   codeField: boolean | null;
   verifyIdentity: boolean | null;
+  prompt: PageSnapshot["prompt"] | null;
+  otherWayAvailable: boolean | null;
+  appCodeOptionAvailable: boolean | null;
 }
 
 export interface LoginOptions {
@@ -140,8 +149,9 @@ export interface LoginOptions {
   skipNavigate?: boolean;
 }
 
-const OTHER_WAY = /use another way|sign in another way|other ways to sign in|can.t use my microsoft authenticator/i;
-const CODE_OPTION = /verification code|code from (?:my |your )?(?:authenticator|mobile app)|use a code|enter a code|one.time code/i;
+const OTHER_WAY = /use another way|use a different verification option|sign in another way|other ways to sign in|can.t use my microsoft authenticator/i;
+// Match known app-code choices, not actions offering to text/email/call with a code.
+const CODE_OPTION = /^(?:(?:use|enter) (?:a |the )?verification code|(?:use |enter )?(?:a |the )?(?:verification )?code from (?:my |your |an? )?(?:microsoft )?(?:authenticator(?: app)?|mobile app))$/i;
 
 /** Log in and resolve when the Banner page with a synchronizer token is showing. */
 export async function login(session: BrowserSession, creds: Credentials | null, opts: LoginOptions = {}): Promise<void> {
@@ -179,6 +189,9 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
         emptyPassword: snap?.flags.emptyPassword ?? null,
         codeField: snap?.fields.otc ?? null,
         verifyIdentity: snap?.flags.verifyIdentity ?? null,
+        prompt: snap?.prompt ?? null,
+        otherWayAvailable: snap ? snap.actions.some(label => OTHER_WAY.test(label)) : null,
+        appCodeOptionAvailable: snap ? snap.actions.some(label => CODE_OPTION.test(label)) : null,
       });
     } catch {
       // Diagnostic observers must not change the login flow.
@@ -323,6 +336,19 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
       if (snap.flags.otcError) throw new HumanActionRequired("totp_rejected");
       if (snap.flags.emptyPassword && passwordDone) throw new LoginError("password_empty");
 
+      const noCredentialForm = !snap.fields.passwd && !snap.fields.loginfmt && !snap.fields.otc;
+      let blockedReason: LoginReason | null = null;
+      if (snap.prompt === "captcha") blockedReason = "captcha_required";
+      else if (snap.prompt === "sms_or_email_code") blockedReason = "unsupported_mfa_method";
+      else if (snap.prompt === "security_info_required") blockedReason = "security_info_required";
+      else if (snap.prompt === "password_change_required") blockedReason = "password_change_required";
+      else if (snap.prompt === "access_blocked") blockedReason = "access_blocked";
+      else if (snap.prompt === "sign_in_error") blockedReason = "microsoft_sign_in_error";
+      if (blockedReason) {
+        diagnose("blocked");
+        throw new HumanActionRequired(blockedReason);
+      }
+
       if (snap.flags.kmsi) {
         stage("kmsi");
         if (kmsiClicks < 3 && (await clickAction(["#idBtn_Back"], /^no$/i, MICROSOFT_HOSTS))) kmsiClicks++;
@@ -372,7 +398,9 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
           await sleep(pollMs);
           continue;
         }
-        if ((clickedOtherWay || snap.flags.verifyIdentity) && !selectedCode) {
+        // Microsoft can show the method picker directly, without this heading or an Other way click.
+        const directMethodPicker = passwordDone && noCredentialForm;
+        if ((clickedOtherWay || snap.flags.verifyIdentity || directMethodPicker) && !selectedCode) {
           if (await clickAction(ACTION_SELECTORS, CODE_OPTION, MICROSOFT_HOSTS)) {
             stage("mfa_method");
             selectedCode = true;

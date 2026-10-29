@@ -20,6 +20,17 @@ export function parseProbe(expr: string): { name: ProbeName; args: unknown[] } |
   return { name: match[1] as ProbeName, args: JSON.parse(argsJson) };
 }
 
+export type SignInPrompt =
+  | "unrecognized"
+  | "captcha"
+  | "security_info_required"
+  | "password_change_required"
+  | "access_blocked"
+  | "sign_in_error"
+  | "sms_or_email_code"
+  | "push_approval"
+  | "passkey";
+
 export interface PageSnapshot {
   host: string;
   secure: boolean; // https, default port
@@ -28,6 +39,7 @@ export interface PageSnapshot {
   fields: { upn: boolean; loginfmt: boolean; loginfmtFilled: boolean; passwd: boolean; otc: boolean };
   actions: string[]; // visible action labels
   syncToken: boolean;
+  prompt: SignInPrompt;
   flags: {
     passwordError: boolean;
     emptyPassword: boolean;
@@ -73,6 +85,18 @@ const SNAPSHOT_FN = `function (sel) {
   const text = (document.body && document.body.innerText) || '';
   const passwd = firstVisible(sel.passwd);
   const loginfmt = firstVisible(sel.loginfmt);
+  const otc = firstVisible(sel.otc);
+  // Only return fixed categories, never the body text or challenge contents.
+  let prompt = 'unrecognized';
+  const captcha = Array.from(document.querySelectorAll('iframe[src*="captcha" i], iframe[title*="captcha" i], [data-sitekey]')).some(visible);
+  if (captcha || /prove you.re (?:not a robot|human)|verify (?:that )?you.re human|help us beat the robots|enter the characters you see/i.test(text)) prompt = 'captcha';
+  else if (/you cannot access this right now|you can.t get there from here|access has been blocked|your sign.in was blocked|AADSTS5300[0-3]/i.test(text)) prompt = 'access_blocked';
+  else if (/your password has expired|(?:update|change) your password/i.test(text)) prompt = 'password_change_required';
+  else if (/more information required|keep your account secure|your organization needs more information|set up (?:your )?security info/i.test(text)) prompt = 'security_info_required';
+  else if (/sorry, but we.re having trouble signing you in|something went wrong|AADSTS[0-9]{5,}/i.test(text)) prompt = 'sign_in_error';
+  else if (otc && /we(?:.ve| have)? (?:sent|texted|emailed) (?:you )?(?:a |the )?(?:verification |security )?code|enter (?:the )?code (?:we|that we) (?:sent|texted|emailed)|code (?:sent|texted|emailed) to (?:your |the )?(?:email|phone)/i.test(text)) prompt = 'sms_or_email_code';
+  else if (/approve (?:the )?sign.?in request|check your (?:microsoft )?authenticator app|we.ve sent a notification|open your authenticator app/i.test(text)) prompt = 'push_approval';
+  else if (/sign in with (?:a )?passkey|face, fingerprint, pin or security key|insert your security key/i.test(text)) prompt = 'passkey';
   const actions = [];
   for (const selector of sel.action) for (const el of document.querySelectorAll(selector)) {
     if (actions.length >= 40) break;
@@ -90,10 +114,11 @@ const SNAPSHOT_FN = `function (sel) {
       loginfmt: Boolean(loginfmt),
       loginfmtFilled: Boolean(loginfmt && loginfmt.value),
       passwd: Boolean(passwd),
-      otc: Boolean(firstVisible(sel.otc)),
+      otc: Boolean(otc),
     },
     actions,
     syncToken: Boolean(document.querySelector('meta[name="synchronizerToken"]')),
+    prompt,
     flags: {
       passwordError: /your account or password is incorrect|password is incorrect|account (?:is|has been) locked/i.test(text),
       emptyPassword: text.includes('Please enter your password.') && !(passwd && passwd.value),

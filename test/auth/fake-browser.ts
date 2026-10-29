@@ -19,6 +19,7 @@ export interface FakePage {
   fields?: Partial<Record<FieldName, { readOnly?: boolean; value?: string }>>;
   actions?: FakeAction[];
   syncToken?: boolean;
+  prompt?: PageSnapshot["prompt"];
   flags?: Partial<PageSnapshot["flags"]>;
 }
 
@@ -124,6 +125,7 @@ export class FakeBrowser implements BrowserSession {
           },
           actions: actions.map(a => a.label),
           syncToken: Boolean(page.syncToken),
+          prompt: page.prompt ?? "unrecognized",
           flags: {
             passwordError: false,
             emptyPassword: false,
