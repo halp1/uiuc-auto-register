@@ -66,7 +66,8 @@ export class WebhookChannel implements WebhookSender {
         throw new WebhookError("Could not reach Discord.");
       }
       if (res.ok) return;
-      if (res.status === 429 && attempt < 2) {
+      if (res.status === 429) {
+        if (attempt === 2) break;
         const body = (await res.json().catch(() => null)) as { retry_after?: number } | null;
         const seconds = Number(body?.retry_after ?? res.headers.get("retry-after") ?? 1);
         await this.sleep(Math.min(10_000, Math.max(250, (Number.isFinite(seconds) ? seconds : 1) * 1000)));
