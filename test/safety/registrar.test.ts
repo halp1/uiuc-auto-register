@@ -3,10 +3,12 @@ import { Bus } from "../../src/core/bus";
 import { FakeClock } from "../../src/core/clock";
 import { makeConfig, type Config } from "../../src/core/config";
 import { Store } from "../../src/core/db";
-import type { Settings } from "../../src/core/types";
+import { Events } from "../../src/core/events";
+import type { RegisterRequest, Settings } from "../../src/core/types";
+import { BannerSessionManager } from "../../src/banner/session";
 import { LiveNotAllowed, LiveRegistrar, makePostSubmitCheck } from "../../src/banner/registrar/live";
 import { RehearsalRegistrar } from "../../src/banner/registrar/rehearsal";
-import type { AddItemRow, BannerReadApi, BannerWriteApi, ScheduleStrategy, SubmitRow } from "../../src/banner/registrar/types";
+import { BannerSessionError, type AddItemRow, type BannerReadApi, type BannerWriteApi, type ScheduleStrategy, type SubmitRow } from "../../src/banner/registrar/types";
 import type { RegistrationModel } from "../../src/banner/guard";
 
 const TERM = "120271";
@@ -15,7 +17,7 @@ const ACTIONS = [
   { courseRegistrationStatus: "DW", description: "Web Drop" },
 ];
 const model = (crn: string): RegistrationModel => ({ courseReferenceNumber: crn, term: TERM, registrationActions: ACTIONS, selectedAction: null });
-const request = (addCrns: string[], dropCrn: string | null = null) => ({ term: TERM, bundleId: 1, addCrns, dropCrn });
+const request = (addCrns: string[], dropCrn: string | null = null): RegisterRequest => ({ term: TERM, bundleId: 1, addCrns, dropCrn });
 
 function cfg(mode: Config["mode"]): Config {
   return makeConfig(mode, { chromePath: null });
@@ -24,7 +26,6 @@ function cfg(mode: Config["mode"]): Config {
 function env(mode: Config["mode"] = "live", patch: Partial<Settings> = { liveEnabled: true, liveTerm: TERM }) {
   const store = new Store(":memory:");
   store.updateSettings(patch);
-  void new Bus();
   return { store, config: cfg(mode), clock: new FakeClock(), settings: () => store.getSettings() };
 }
 
@@ -69,54 +70,38 @@ function fakeApi(opts: { schedule?: string[]; strategies?: () => ScheduleStrateg
 }
 
 describe("LiveRegistrar gating", () => {
-  test("constructor refuses simulated and rehearsal modes", () => {
-    for (const mode of ["simulated", "rehearsal"] as const) {
-      const e = env(mode);
-      expect(() => new LiveRegistrar({ ...e, api: fakeApi().api })).toThrow(LiveNotAllowed);
+  test.each<[string, Config["mode"], Partial<Settings>, Partial<Config>, string | null | undefined, LiveNotAllowed["reason"]]>([
+    ["simulated mode", "simulated", { liveEnabled: true, liveTerm: TERM }, {}, undefined, "not_live_mode"],
+    ["rehearsal mode", "rehearsal", { liveEnabled: true, liveTerm: TERM }, {}, undefined, "not_live_mode"],
+    ["saved mode is not live", "live", { liveEnabled: true, liveTerm: TERM, mode: "rehearsal" }, {}, undefined, "not_live_mode"],
+    ["hot reload", "live", { liveEnabled: true, liveTerm: TERM }, { hotReload: true }, undefined, "not_live_mode"],
+    ["Live switched off", "live", { liveEnabled: false, liveTerm: TERM }, {}, undefined, "live_disabled"],
+    ["no live term", "live", { liveEnabled: true, liveTerm: null }, {}, undefined, "term_mismatch"],
+    ["a different term", "live", { liveEnabled: true, liveTerm: TERM }, {}, "120268", "term_mismatch"],
+  ])("constructor refuses: %s", (_name, mode, patch, configPatch, term, reason) => {
+    const e = env(mode, patch);
+    const config = { ...e.config, ...configPatch };
+    let error: unknown;
+    try {
+      new LiveRegistrar({ ...e, config, api: fakeApi().api }, term);
+    } catch (caught) {
+      error = caught;
     }
+    expect(error).toBeInstanceOf(LiveNotAllowed);
+    expect((error as LiveNotAllowed).reason).toBe(reason);
   });
 
-  test("constructor refuses when Live is off or the term mismatches", () => {
-    const off = env("live", { liveEnabled: false, liveTerm: TERM });
-    expect(() => new LiveRegistrar({ ...off, api: fakeApi().api })).toThrow("live_disabled");
-    const noTerm = env("live", { liveEnabled: true, liveTerm: null });
-    expect(() => new LiveRegistrar({ ...noTerm, api: fakeApi().api })).toThrow("term_mismatch");
-    const other = env("live", { liveEnabled: true, liveTerm: TERM });
-    expect(() => new LiveRegistrar({ ...other, api: fakeApi().api }, "120268")).toThrow("term_mismatch");
-  });
-
-  test("the saved mode and hot reload are gates too", async () => {
-    const saved = env("live", { liveEnabled: true, liveTerm: TERM, mode: "rehearsal" });
-    expect(() => new LiveRegistrar({ ...saved, api: fakeApi().api })).toThrow("not_live_mode");
-    const hot = env("live");
-    expect(() => new LiveRegistrar({ ...hot, config: makeConfig("live", { chromePath: null, hotReload: true }), api: fakeApi().api })).toThrow("not_live_mode");
-    // A mode switch saved mid-run stops the next register() before any call to Banner.
+  test.each<[string, Partial<Settings>, RegisterRequest]>([
+    ["mode switched mid-run", { mode: "simulated" }, request(["31187"])],
+    ["Live switched off", { liveEnabled: false }, request(["31187"])],
+    ["live term changed", { liveTerm: "120268" }, request(["31187"])],
+    ["a drop while swaps are locked", {}, request(["31187"], "22222")],
+  ])("register aborts before any Banner call: %s", async (_name, patch, req) => {
     const e = env();
     const fake = fakeApi();
     const live = new LiveRegistrar({ ...e, api: fake.api });
-    e.store.updateSettings({ mode: "simulated" });
-    expect((await live.register(request(["31187"]))).outcome).toBe("aborted");
-    expect(fake.calls).toEqual([]);
-  });
-
-  test("register re-checks the gates on every call", async () => {
-    const e = env();
-    const fake = fakeApi();
-    const live = new LiveRegistrar({ ...e, api: fake.api });
-    e.store.updateSettings({ liveEnabled: false });
-    const r1 = await live.register(request(["31187"]));
-    expect(r1.outcome).toBe("aborted");
-    e.store.updateSettings({ liveEnabled: true, liveTerm: "120268" });
-    const r2 = await live.register(request(["31187"]));
-    expect(r2.outcome).toBe("aborted");
-    expect(fake.calls).toEqual([]);
-  });
-
-  test("a drop needs swaps unlocked", async () => {
-    const e = env();
-    const fake = fakeApi();
-    const r = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187"], "22222"));
-    expect(r.outcome).toBe("aborted");
+    e.store.updateSettings(patch);
+    expect((await live.register(req)).outcome).toBe("aborted");
     expect(fake.calls).toEqual([]);
   });
 });
@@ -132,26 +117,23 @@ describe("LiveRegistrar flow", () => {
     expect(e.store.latestSchedule(TERM)!.crns).toEqual(["11111", "22222", "31187", "31225"]);
   });
 
-  test("a lost CRN after submit returns aborted with the schedule guard message", async () => {
+  test("a lost CRN after submit aborts and names the lost CRN", async () => {
     const e = env();
     const fake = fakeApi({ afterSubmit: () => ["11111", "31187"] });
     const result = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187"]));
     expect(result.outcome).toBe("aborted");
-    expect(result.message).toBe("Schedule guard: lost CRNs 22222");
+    expect(result.message).toContain("22222");
   });
 
-  test("an unexpected model from addCRNRegistrationItems aborts before submit", async () => {
+  test.each<[string, (crns: string[]) => AddItemRow[]]>([
+    ["an unrequested model from addCRNRegistrationItems", crns => [...crns, "22222"].map(crn => ({ crn, success: true, message: null, model: model(crn) }))],
+    [
+      "an ambiguous add action",
+      crns => crns.map(crn => ({ crn, success: true, message: null, model: { ...model(crn), registrationActions: [...ACTIONS, { courseRegistrationStatus: "RA", description: "Add pending approval" }] } })),
+    ],
+  ])("%s aborts before submit and de-authorizes", async (_name, addRows) => {
     const e = env();
-    const fake = fakeApi({ addRows: crns => [...crns, "22222"].map(crn => ({ crn, success: true, message: null, model: model(crn) })) });
-    const r = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187"]));
-    expect(r.outcome).toBe("aborted");
-    expect(fake.calls).not.toContain("submit");
-  });
-
-  test("an ambiguous add action aborts before submit", async () => {
-    const e = env();
-    const ambiguous = [...ACTIONS, { courseRegistrationStatus: "RA", description: "Add pending approval" }];
-    const fake = fakeApi({ addRows: crns => crns.map(crn => ({ crn, success: true, message: null, model: { ...model(crn), registrationActions: ambiguous } })) });
+    const fake = fakeApi({ addRows });
     const r = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187"]));
     expect(r.outcome).toBe("aborted");
     expect(fake.calls).not.toContain("submit");
@@ -191,11 +173,13 @@ describe("LiveRegistrar flow", () => {
     const e = env();
     const fake = fakeApi();
     await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187"]));
-    const check = makePostSubmitCheck({ api: fake.api, store: e.store });
-    expect((await check(request(["31187"]), { outcome: "success", rows: [], classification: null, message: null, ms: 0 })).ok).toBe(true);
+    const success = { outcome: "success" as const, rows: [], classification: null, message: null, ms: 0 };
+    expect((await makePostSubmitCheck({ api: fake.api, store: e.store })(request(["31187"]), success)).ok).toBe(true);
     const losing = { ...fake.api, readSchedule: async () => ["31187"] };
-    const bad = await makePostSubmitCheck({ api: losing, store: e.store })(request(["31187"]), { outcome: "success", rows: [], classification: null, message: null, ms: 0 });
-    expect(bad).toEqual({ ok: false, detail: "Schedule guard: lost CRNs 11111, 22222" });
+    const bad = await makePostSubmitCheck({ api: losing, store: e.store })(request(["31187"]), success);
+    expect(bad.ok).toBe(false);
+    expect(bad.detail).toContain("11111");
+    expect(bad.detail).toContain("22222");
   });
 });
 
@@ -226,29 +210,21 @@ describe("LiveRegistrar schedule guards", () => {
     const r = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187"]));
     expect(r.outcome).toBe("aborted");
     expect(r.classification).toBe("unknown");
-    expect(r.message).toBe("Schedule guard: could not verify the schedule");
   });
 
-  test("a partially added bundle aborts with unknown", async () => {
+  test.each<[string, (s: string[]) => string[], "aborted" | "failed"]>([
+    // 31187 lands on the schedule but 31225 does not: a partial bundle.
+    ["a partially added bundle aborts", s => [...s, "31187"], "aborted"],
+    // The schedule is unchanged, so this is not a partial add, but Banner accepted a row.
+    ["a failed submit with any accepted row", s => s, "failed"],
+  ])("%s with unknown, never transient", async (_name, afterSubmit, outcome) => {
     const e = env();
     const fake = fakeApi({
-      afterSubmit: s => [...s, "31187"],
+      afterSubmit,
       submitRows: models => models.map(m => ({ crn: m.courseReferenceNumber, ok: m.courseReferenceNumber === "31187", message: m.courseReferenceNumber === "31187" ? "Registered" : "Closed Section", statusDescription: null })),
     });
     const r = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187", "31225"]));
-    expect(r.outcome).toBe("aborted");
-    expect(r.classification).toBe("unknown");
-    expect(r.message).toStartWith("Schedule guard: only part of the bundle was added");
-  });
-
-  test("a failed submit with any accepted row is unknown, never transient", async () => {
-    const e = env();
-    const fake = fakeApi({
-      afterSubmit: s => s, // schedule unchanged, so not a partial add
-      submitRows: models => models.map(m => ({ crn: m.courseReferenceNumber, ok: m.courseReferenceNumber === "31187", message: "Closed Section", statusDescription: null })),
-    });
-    const r = await new LiveRegistrar({ ...e, api: fake.api }).register(request(["31187", "31225"]));
-    expect(r.outcome).toBe("failed");
+    expect(r.outcome).toBe(outcome);
     expect(r.classification).toBe("unknown");
   });
 });
@@ -258,18 +234,15 @@ describe("RehearsalRegistrar", () => {
     const e = env("rehearsal", {});
     const fake = fakeApi();
     // Hand it the full object to prove it does not reach for write methods even when present.
-    const spyApi = fake.api as BannerReadApi;
-    const r = await new RehearsalRegistrar({ api: spyApi, clock: e.clock, store: e.store }).register(request(["31187", "31225"]));
+    const r = await new RehearsalRegistrar({ api: fake.api as BannerReadApi, clock: e.clock, store: e.store }).register(request(["31187", "31225"]));
     expect(r.outcome).toBe("dry_run");
-    expect(r.message).toStartWith("Would register CRNs 31187, 31225");
+    expect(r.rows.map(row => row.crn)).toEqual(["31187", "31225"]);
     expect(fake.calls).toEqual(["ensureWarm", "readSchedule"]);
     expect(fake.submitted).toEqual([]);
   });
 
-  test("read-only API object has no write methods", async () => {
-    const { BannerSessionManager } = await import("../../src/banner/session");
+  test("read-only API object has no write methods, and writeApi refuses outside live mode", () => {
     const e = env("rehearsal", {});
-    const { Events } = await import("../../src/core/events");
     const manager = new BannerSessionManager({ config: e.config, events: new Events(e.store, new Bus()), store: e.store, clock: e.clock, settings: e.settings, credentials: () => null });
     const api = manager.readApi() as unknown as Record<string, unknown>;
     for (const name of ["withAuthorizedBatch", "addCrnItems", "submitBatch", "workingSet"]) expect(api[name]).toBeUndefined();
@@ -278,8 +251,12 @@ describe("RehearsalRegistrar", () => {
 
   test("a session failure is reported, not thrown", async () => {
     const e = env("rehearsal", {});
-    const fake = fakeApi();
-    const api: BannerReadApi = { ...fake.api, ensureWarm: async () => { throw new (await import("../../src/banner/registrar/types")).BannerSessionError("missing_credentials"); } };
+    const api: BannerReadApi = {
+      ...fakeApi().api,
+      ensureWarm: async () => {
+        throw new BannerSessionError("missing_credentials");
+      },
+    };
     const r = await new RehearsalRegistrar({ api, clock: e.clock }).register(request(["31187"]));
     expect(r.outcome).toBe("failed");
     expect(r.message).toContain("missing_credentials");

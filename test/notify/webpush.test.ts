@@ -56,8 +56,9 @@ describe("web push", () => {
   });
 
   test("no subscriptions is reported, not thrown", async () => {
-    const result = await channel(async () => {}).send({ title: "t", body: "b", tag: "t", url: "/" });
-    expect(result.sent).toBe(0);
-    expect(result.detail).toContain("No browsers");
+    let calls = 0;
+    const result = await channel(async () => void calls++).send({ title: "t", body: "b", tag: "t", url: "/" });
+    expect(result).toMatchObject({ sent: 0, removed: 0, failed: 0 });
+    expect(calls).toBe(0);
   });
 });

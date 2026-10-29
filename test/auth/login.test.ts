@@ -61,49 +61,27 @@ describe("login", () => {
     expect(browser.typed.some(t => t.field === "loginfmt")).toBe(false);
   });
 
-  test("password field on a non-Microsoft host is never typed", async () => {
-    const { clock, browser } = setup({
-      override: {
-        password: () => ({
-          url: "https://login.evil-example.com/common/login",
-          fields: { passwd: {} },
-          actions: [{ label: "Sign in", kind: "submit", onClick: () => {} }],
-        }),
-      },
-    });
-    const error = await login(browser, CREDS, { clock, unknownHostMs: 5_000 }).catch(e => e);
+  const passwordPage = (url: string, opts: { readOnly?: boolean; submit?: string } = {}) => () => ({
+    url,
+    fields: { passwd: { readOnly: opts.readOnly } },
+    actions: [{ label: opts.submit ?? "Sign in", kind: "submit" as const, onClick: () => {} }],
+  });
+
+  test.each([
+    ["non-Microsoft host", { password: passwordPage("https://login.evil-example.com/common/login") }, "unexpected_host", 0],
+    ["idpproxy host", { password: passwordPage("https://idpproxy.uillinois.edu/login") }, "unsupported_mfa_or_timeout", 0],
+    ["login.microsoft.com (not the password host)", { password: passwordPage("https://login.microsoft.com/common/login") }, "unsupported_mfa_or_timeout", 0],
+    ["form without a Sign in button", { password: passwordPage("https://login.microsoftonline.com/common/login", { submit: "Continue" }) }, "unsupported_mfa_or_timeout", 0],
+    ["read-only password field", { password: passwordPage("https://login.microsoftonline.com/common/login", { readOnly: true }) }, "unsupported_mfa_or_timeout", 0],
+    ["unknown MFA host after the password", { push: () => ({ url: "https://duo.example.org/frame", actions: [] }) }, "unexpected_host", 1],
+  ] as const)("password is never typed on a wrong page: %s", async (_name, override, expected, typedCount) => {
+    const { clock, browser } = setup({ override });
+    const error = await login(browser, CREDS, { clock, timeoutMs: 20_000, unknownHostMs: 5_000 }).catch(e => e);
     expect(error).toBeInstanceOf(HumanActionRequired);
-    expect(error.reason).toBe("unexpected_host");
-    expect(passwordTypedOn(browser)).toEqual([]);
-    expect(String(error.message)).not.toContain("evil");
-  });
-
-  test("password field on the idpproxy host is never typed", async () => {
-    const { clock, browser } = setup({
-      override: {
-        password: () => ({
-          url: "https://idpproxy.uillinois.edu/login",
-          fields: { passwd: {} },
-          actions: [{ label: "Sign in", kind: "submit", onClick: () => {} }],
-        }),
-      },
-    });
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
-    expect(passwordTypedOn(browser)).toEqual([]);
-  });
-
-  test("password field on login.microsoft.com (not the password host) is never typed", async () => {
-    const { clock, browser } = setup({
-      override: {
-        password: () => ({
-          url: "https://login.microsoft.com/common/login",
-          fields: { passwd: {} },
-          actions: [{ label: "Sign in", kind: "submit", onClick: () => {} }],
-        }),
-      },
-    });
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
-    expect(passwordTypedOn(browser)).toEqual([]);
+    expect(error.reason).toBe(expected);
+    expect(passwordTypedOn(browser)).toEqual(Array(typedCount).fill("login.microsoftonline.com"));
+    // Errors carry fixed reason codes, never the page URL.
+    expect(String(error.message)).not.toMatch(/evil|duo/);
   });
 
   test("host changes between focus and typing: nothing typed", async () => {
@@ -113,16 +91,6 @@ describe("login", () => {
     };
     expect(await reason(login(browser, CREDS, { clock }))).toBe("focus_failed");
     expect(passwordTypedOn(browser)).toEqual([]);
-  });
-
-  test("unexpected host raises HumanActionRequired with a fixed reason", async () => {
-    const { clock, browser } = setup({
-      override: { push: () => ({ url: "https://duo.example.org/frame", actions: [] }) },
-    });
-    const error = await login(browser, CREDS, { clock }).catch(e => e);
-    expect(error).toBeInstanceOf(HumanActionRequired);
-    expect(error.reason).toBe("unexpected_host");
-    expect(error.message).toBe("Sign-in requires human action (unexpected_host)");
   });
 
   test("a mislabeled Next button stops before the password", async () => {
@@ -143,34 +111,6 @@ describe("login", () => {
     const { clock, browser } = setup({ password: "something else" });
     expect(await reason(login(browser, CREDS, { clock }))).toBe("password_rejected");
     expect(passwordTypedOn(browser).length).toBe(1);
-  });
-
-  test("a password form without Sign in never types", async () => {
-    const { clock, browser } = setup({
-      override: {
-        password: () => ({
-          url: "https://login.microsoftonline.com/common/login",
-          fields: { passwd: {} },
-          actions: [{ label: "Continue", kind: "submit", onClick: () => {} }],
-        }),
-      },
-    });
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
-    expect(passwordTypedOn(browser)).toEqual([]);
-  });
-
-  test("a read-only password field is never typed", async () => {
-    const { clock, browser } = setup({
-      override: {
-        password: () => ({
-          url: "https://login.microsoftonline.com/common/login",
-          fields: { passwd: { readOnly: true } },
-          actions: [{ label: "Sign in", kind: "submit", onClick: () => {} }],
-        }),
-      },
-    });
-    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000 }))).toBe("unsupported_mfa_or_timeout");
-    expect(passwordTypedOn(browser)).toEqual([]);
   });
 
   test("a submit without page progression never resubmits the password", async () => {
@@ -338,13 +278,15 @@ describe("login", () => {
     ["access_blocked", "access_blocked"],
     ["sign_in_error", "microsoft_sign_in_error"],
     ["captcha", "captcha_required"],
-  ] as const)("stops on %s before clicking a code-looking setup/security action", async (prompt, expected) => {
+    ["sms_or_email_code", "unsupported_mfa_method"],
+  ] as const)("stops on %s before clicking a code-looking action or typing a TOTP", async (prompt, expected) => {
     let clicks = 0;
     const { clock, browser } = setup({
       override: {
         push: () => ({
           url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
           prompt,
+          fields: { otc: {} },
           actions: [{ label: "Use a verification code", kind: "button", onClick: () => {
             clicks++;
           } }],
@@ -377,21 +319,6 @@ describe("login", () => {
     expect(passwordTypedOn(browser)).toEqual([]);
   });
 
-  test("never types a TOTP into a delivered SMS/email code challenge", async () => {
-    const { clock, browser } = setup({
-      override: {
-        push: () => ({
-          url: "https://login.microsoftonline.com/common/SAS/ProcessAuth",
-          prompt: "sms_or_email_code",
-          fields: { otc: {} },
-          actions: [{ label: "Verify", kind: "submit", onClick: () => {} }],
-        }),
-      },
-    });
-    expect(await reason(login(browser, CREDS, { clock }))).toBe("unsupported_mfa_method");
-    expect(browser.typed.some(t => t.field === "otc")).toBe(false);
-  });
-
   test("leaves the observed FIDO page once and completes an available app-code alternative", async () => {
     let backs = 0;
     const { clock, browser, flow } = setup({ override: {
@@ -420,46 +347,27 @@ describe("login", () => {
     expect(browser.typed.filter(t => t.field === "otc")).toHaveLength(1);
   });
 
-  test("a passkey Back button that makes no progress is never clicked twice", async () => {
-    let backs = 0;
-    const { clock, browser } = setup({ override: {
-      push: () => ({
-        url: "https://login.microsoft.com/tenant/fido/get",
-        prompt: "passkey",
-        actions: [{ label: "Back", kind: "back", onClick: () => { backs++; } }],
-      }),
-    } });
-    expect(await reason(login(browser, CREDS, { clock }))).toBe("passkey_required");
-    expect(backs).toBe(1);
-    expect(passwordTypedOn(browser)).toHaveLength(1);
-  });
-
-  test("returning to the password form after cancelling passkey does not resubmit credentials", async () => {
+  test.each([
+    ["Back that makes no progress is clicked once", "Back", "stay", 1],
+    ["Back that returns to the password form does not resubmit", "Back", "password", 1],
+    ["mislabeled Back (Continue) is never clicked", "Continue", "stay", 0],
+    ["mislabeled Back (No) is never clicked", "No", "stay", 0],
+  ] as const)("FIDO screen fails closed: %s", async (_name, label, onBack, expectedClicks) => {
+    let clicks = 0;
     const { clock, browser, flow } = setup({ override: {
       push: () => ({
         url: "https://login.microsoft.com/tenant/fido/get",
         prompt: "passkey",
-        actions: [{ label: "Back", kind: "back", onClick: b => b.show(flow.pages.password(b)) }],
+        actions: [{ label, kind: "back", onClick: b => {
+          clicks++;
+          if (onBack === "password") b.show(flow.pages.password(b));
+        } }],
       }),
     } });
     expect(await reason(login(browser, CREDS, { clock }))).toBe("passkey_required");
+    expect(clicks).toBe(expectedClicks);
     expect(passwordTypedOn(browser)).toHaveLength(1);
     expect(browser.typed.some(t => t.field === "otc")).toBe(false);
-  });
-
-  test("missing or mislabeled Back fails closed on the FIDO screen", async () => {
-    for (const label of ["Continue", "No"]) {
-      let clicks = 0;
-      const { clock, browser } = setup({ override: {
-        push: () => ({
-          url: "https://login.microsoft.com/tenant/fido/get",
-          prompt: "passkey",
-          actions: [{ label, kind: "back", onClick: () => { clicks++; } }],
-        }),
-      } });
-      expect(await reason(login(browser, CREDS, { clock }))).toBe("passkey_required");
-      expect(clicks).toBe(0);
-    }
   });
 
   test("does not leave a method picker just because it also lists a passkey", async () => {

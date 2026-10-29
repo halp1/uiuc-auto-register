@@ -27,28 +27,25 @@ function sec(crn: string, meetings: Meeting[], partOfTerm: string | null = "1", 
 const map = (...sections: SchedSection[]) => new Map(sections.map(section => [section.crn, section]));
 
 describe("conflicts", () => {
-  test("part of term: full term overlaps everything, halves only themselves", () => {
-    expect(partsOverlap("1", "A")).toBe(true);
-    expect(partsOverlap(null, "B")).toBe(true);
-    expect(partsOverlap("A", "A")).toBe(true);
-    expect(partsOverlap("A", "B")).toBe(false);
+  test.each([
+    ["1", "A", true],
+    [null, "B", true],
+    ["A", "A", true],
+    ["A", "B", false],
+  ])("partsOverlap(%p, %p) is %p", (x, y, expected) => {
+    expect(partsOverlap(x, y)).toBe(expected);
   });
 
-  test("same time in different halves of the term does not conflict", () => {
-    const a = sec("10001", [meeting("MW", "09:00", "09:50")], "A");
-    const b = sec("10002", [meeting("W", "09:30", "10:20")], "B");
-    const full = sec("10003", [meeting("W", "09:30", "10:20")], "1");
-    expect(sectionsConflict(a, b)).toBe(false);
-    expect(sectionsConflict(a, full)).toBe(true);
-    expect(sectionsConflict(a, { ...b, partOfTerm: "A" })).toBe(true);
-  });
-
-  test("untimed meetings never conflict, touching edges do not overlap", () => {
-    const online = sec("10001", [meeting("", null, null)]);
-    const lecture = sec("10002", [meeting("MWF", "09:00", "09:50")]);
-    const next = sec("10003", [meeting("M", "09:50", "10:40")]);
-    expect(sectionsConflict(online, lecture)).toBe(false);
-    expect(sectionsConflict(lecture, next)).toBe(false);
+  const lecture = sec("10001", [meeting("MW", "09:00", "09:50")], "A");
+  test.each([
+    ["different halves of the term", sec("10002", [meeting("W", "09:30", "10:20")], "B"), false],
+    ["full term against a half", sec("10003", [meeting("W", "09:30", "10:20")], "1"), true],
+    ["same half", sec("10004", [meeting("W", "09:30", "10:20")], "A"), true],
+    ["untimed meeting", sec("10005", [meeting("", null, null)], "A"), false],
+    ["touching edges", sec("10006", [meeting("M", "09:50", "10:40")], "A"), false],
+  ])("sectionsConflict: %s -> %p", (_label, other, expected) => {
+    expect(sectionsConflict(lecture, other)).toBe(expected);
+    expect(sectionsConflict(other, lecture)).toBe(expected);
   });
 
   test("breakHit and planConflicts", () => {
@@ -77,24 +74,25 @@ describe("stats and sorting", () => {
     expect(scheduleStats([sec("1", [meeting("M", "09:00", "11:00")]), sec("2", [meeting("M", "10:00", "10:30")])]).gapMin).toBe(0);
   });
 
-  test("sort orders", () => {
-    const make = (key: string, stats: Partial<PlanSchedule["stats"]>): PlanSchedule => ({
-      key,
-      picks: [],
-      stats: { days: 3, start: "09:00", end: "15:00", gapMin: 60, closed: 0, minSeats: 5, ...stats },
-    });
-    const list = [
-      make("a", { closed: 1, minSeats: 0, days: 2, start: "11:00", end: "13:00", gapMin: 0 }),
-      make("b", { closed: 0, minSeats: 2, days: 4, start: "08:00", end: "17:00", gapMin: 120 }),
-      make("c", { closed: 0, minSeats: 9, days: 3, start: "10:00", end: "14:00", gapMin: 30 }),
-      make("d", { closed: 0, minSeats: null, days: 3, start: "10:00", end: "14:00", gapMin: 10 }),
-    ];
-    const order = (sort: Parameters<typeof compareSchedules>[0]) => [...list].sort(compareSchedules(sort)).map(s => s.key);
-    expect(order("open")).toEqual(["c", "b", "d", "a"]);
-    expect(order("days")).toEqual(["a", "d", "c", "b"]);
-    expect(order("start")).toEqual(["a", "d", "c", "b"]);
-    expect(order("end")).toEqual(["a", "d", "c", "b"]);
-    expect(order("gaps")).toEqual(["a", "d", "c", "b"]);
+  const make = (key: string, stats: Partial<PlanSchedule["stats"]>): PlanSchedule => ({
+    key,
+    picks: [],
+    stats: { days: 3, start: "09:00", end: "15:00", gapMin: 60, closed: 0, minSeats: 5, ...stats },
+  });
+  const list = [
+    make("a", { closed: 1, minSeats: 0, days: 2, start: "11:00", end: "13:00", gapMin: 0 }),
+    make("b", { closed: 0, minSeats: 2, days: 4, start: "08:00", end: "17:00", gapMin: 120 }),
+    make("c", { closed: 0, minSeats: 9, days: 3, start: "10:00", end: "14:00", gapMin: 30 }),
+    make("d", { closed: 0, minSeats: null, days: 3, start: "10:00", end: "14:00", gapMin: 10 }),
+  ];
+  test.each([
+    ["open", ["c", "b", "d", "a"]],
+    ["days", ["a", "d", "c", "b"]],
+    ["start", ["a", "d", "c", "b"]],
+    ["end", ["a", "d", "c", "b"]],
+    ["gaps", ["a", "d", "c", "b"]],
+  ] as [Parameters<typeof compareSchedules>[0], string[]][])("sort by %s", (sort, expected) => {
+    expect([...list].sort(compareSchedules(sort)).map(s => s.key)).toEqual(expected);
   });
 });
 

@@ -6,36 +6,26 @@ import { Store } from "../../src/core/db";
 
 const fixture = (name: string) => Bun.file(new URL(`../fixtures/${name}`, import.meta.url)).text();
 
-describe("parseEnrollmentInfo", () => {
-  test("reads the live fragment", async () => {
-    expect(parseEnrollmentInfo(await fixture("enrollment-59777.html"))).toEqual({ enrolled: 0, max: 400, available: 400 });
-    expect(parseEnrollmentInfo(await fixture("enrollment-65054.html"))).toEqual({ enrolled: 61, max: 100, available: 39 });
-  });
-
-  test("returns null for pages without the labels", () => {
-    expect(parseEnrollmentInfo("<html><title>Banner</title></html>")).toBeNull();
-  });
+test.each([
+  ["enrollment-59777.html", { enrolled: 0, max: 400, available: 400 }],
+  ["enrollment-65054.html", { enrolled: 61, max: 100, available: 39 }],
+])("parseEnrollmentInfo reads %s", async (name, expected) => {
+  expect(parseEnrollmentInfo(await fixture(name))).toEqual(expected);
 });
 
-describe("parseLinkedSections", () => {
-  test("groups options", async () => {
-    const options = parseLinkedSections(await fixture("linked-59777.html"));
-    expect(options).toEqual([["31225"], ["31234"], ["31231"], ["59778"], ["31229"], ["31227"], ["31222"]]);
-  });
-
-  test("empty when no linked sections", async () => {
-    expect(parseLinkedSections(await fixture("linked-empty.html"))).toEqual([]);
-  });
-
-  test("null for unrelated pages", () => {
-    expect(parseLinkedSections("<html>login</html>")).toBeNull();
-  });
+test("parseLinkedSections groups options, empty when none, null for unrelated pages", async () => {
+  expect(parseLinkedSections(await fixture("linked-59777.html"))).toEqual([["31225"], ["31234"], ["31231"], ["59778"], ["31229"], ["31227"], ["31222"]]);
+  expect(parseLinkedSections(await fixture("linked-empty.html"))).toEqual([]);
+  expect(parseLinkedSections("<html>login</html>")).toBeNull();
+  expect(parseEnrollmentInfo("<html><title>Banner</title></html>")).toBeNull();
 });
 
-test("parseRetryAfter", () => {
-  expect(parseRetryAfter("30")).toBe(30_000);
-  expect(parseRetryAfter(null)).toBeNull();
-  expect(parseRetryAfter(new Date(10_000).toUTCString(), 0)).toBe(10_000);
+test.each([
+  ["seconds", "30", undefined, 30_000],
+  ["missing", null, undefined, null],
+  ["HTTP date", new Date(10_000).toUTCString(), 0, 10_000],
+] as const)("parseRetryAfter: %s", (_name, header, now, expected) => {
+  expect(parseRetryAfter(header, now)).toBe(expected);
 });
 
 type Handler = (url: URL) => Response | Promise<Response>;
@@ -86,40 +76,18 @@ describe("AnonymousSeatSource", () => {
     expect(peak).toBeGreaterThan(1);
   });
 
-  test("login redirect throws login_required", async () => {
-    const { fn } = fakeFetch(() => new Response(null, { status: 302, headers: { location: "https://eis.apps.uillinois.edu/saml2/authenticate" } }));
-    const source = new AnonymousSeatSource({ fetch: fn, spreadMs: 0 });
-    const error = await source.fetchSeats("120271", ["11111", "22222"]).catch(e => e);
+  test.each([
+    ["login redirect", () => new Response(null, { status: 302, headers: { location: "https://eis.apps.uillinois.edu/saml2/authenticate" } }), "login_required"],
+    ["labels missing on 200", () => new Response("<html>Sign in</html>"), "login_required"],
+    ["every CRN 5xx", () => new Response("oops", { status: 503 }), "server_error"],
+    ["429", () => new Response("slow down", { status: 429, headers: { "retry-after": "45" } }), "rate_limited"],
+    ["network error", () => Promise.reject(new TypeError("fetch failed")), "network"],
+  ] as const)("%s throws %s", async (_name, respond, reason) => {
+    const { fn } = fakeFetch(respond);
+    const error = await new AnonymousSeatSource({ fetch: fn, spreadMs: 0 }).fetchSeats("120271", ["11111", "22222"]).catch(e => e);
     expect(error).toBeInstanceOf(SeatSourceError);
-    expect(error.reason).toBe("login_required");
-  });
-
-  test("429 throws rate_limited with Retry-After", async () => {
-    const { fn } = fakeFetch(() => new Response("slow down", { status: 429, headers: { "retry-after": "45" } }));
-    const error = await new AnonymousSeatSource({ fetch: fn, spreadMs: 0 }).fetchSeats("120271", ["11111"]).catch(e => e);
-    expect(error.reason).toBe("rate_limited");
-    expect(error.retryAfterMs).toBe(45_000);
-  });
-
-  test("all 5xx throws server_error, labels missing on 200 throws login_required", async () => {
-    const down = fakeFetch(() => new Response("oops", { status: 503 }));
-    expect((await new AnonymousSeatSource({ fetch: down.fn, spreadMs: 0 }).fetchSeats("120271", ["1", "2"]).catch(e => e)).reason).toBe(
-      "server_error",
-    );
-    const weird = fakeFetch(() => new Response("<html>Sign in</html>"));
-    expect((await new AnonymousSeatSource({ fetch: weird.fn, spreadMs: 0 }).fetchSeats("120271", ["1"]).catch(e => e)).reason).toBe(
-      "login_required",
-    );
-  });
-
-  test("network errors on every CRN throw network", async () => {
-    const source = new AnonymousSeatSource({
-      fetch: async () => {
-        throw new TypeError("fetch failed");
-      },
-      spreadMs: 0,
-    });
-    expect((await source.fetchSeats("120271", ["1"]).catch(e => e)).reason).toBe("network");
+    expect(error.reason).toBe(reason);
+    if (reason === "rate_limited") expect(error.retryAfterMs).toBe(45_000);
   });
 
   test("empty input makes no requests", async () => {

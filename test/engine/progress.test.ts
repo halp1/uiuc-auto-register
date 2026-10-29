@@ -18,14 +18,14 @@ const want = (subject: string, number: string, opts: { armed?: boolean; state?: 
   return w;
 };
 
-describe("parseCredits", () => {
-  test("single values, ranges, and missing", () => {
-    expect(parseCredits("3 hours")).toEqual({ credits: 3, variable: false });
-    expect(parseCredits("1 TO 4 hours")).toEqual({ credits: 1, variable: true });
-    expect(parseCredits("3 OR 4 hours")).toEqual({ credits: 3, variable: true });
-    expect(parseCredits("")).toEqual({ credits: null, variable: false });
-    expect(parseCredits(null)).toEqual({ credits: null, variable: false });
-  });
+test.each([
+  ["3 hours", 3, false],
+  ["1 TO 4 hours", 1, true],
+  ["3 OR 4 hours", 3, true],
+  ["", null, false],
+  [null, null, false],
+])("parseCredits(%p)", (raw, credits, variable) => {
+  expect(parseCredits(raw)).toEqual({ credits, variable });
 });
 
 describe("scheduleProgress", () => {
@@ -37,15 +37,18 @@ describe("scheduleProgress", () => {
     want("CS", "225");
     want("MATH", "241", { state: "registered" });
     want("CS", "374", { armed: false });
+    expect(scheduleProgress(store, TERM)!.creditsKnown).toBe(true);
+    // A course missing from the catalog makes the credit total unknown.
+    want("ZZZ", "999");
     const p = scheduleProgress(store, TERM)!;
     expect(p.source).toBe("watchlist");
-    expect(p.courses.map(c => `${c.subject} ${c.number} ${c.state}`)).toEqual(["CS 225 watching", "MATH 241 registered"]);
-    expect(p).toMatchObject({ registeredCourses: 1, totalCourses: 2 });
+    expect(p.courses.map(c => `${c.subject} ${c.number} ${c.state}`)).toEqual(["CS 225 watching", "MATH 241 registered", "ZZZ 999 watching"]);
+    expect(p).toMatchObject({ registeredCourses: 1, totalCourses: 3, creditsKnown: false });
+    expect(p.courses[2]!.credits).toBeNull();
     const cs = Number(getStoredCourse(store, TERM, "CS", "225")!.creditHours!.match(/\d+/)![0]);
     const math = Number(getStoredCourse(store, TERM, "MATH", "241")!.creditHours!.match(/\d+/)![0]);
     expect(p.totalCredits).toBe(cs + math);
     expect(p.registeredCredits).toBe(math);
-    expect(p.creditsKnown).toBe(true);
   });
 
   test("a targeted plan is the goal, and a class registered by hand counts from the schedule snapshot", () => {
@@ -74,10 +77,4 @@ describe("scheduleProgress", () => {
     expect(p.scheduleCheckedAt).not.toBeNull();
   });
 
-  test("unknown catalog credits are flagged", () => {
-    want("ZZZ", "999");
-    const p = scheduleProgress(store, TERM)!;
-    expect(p.creditsKnown).toBe(false);
-    expect(p.courses[0]!.credits).toBeNull();
-  });
 });

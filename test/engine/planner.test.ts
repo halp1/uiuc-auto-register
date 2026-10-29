@@ -18,18 +18,15 @@ describe("openBundles", () => {
     bundles: [bundle(3, 2, ["c"]), bundle(1, 0, ["a", "x"]), bundle(2, 1, ["b", "x"]), bundle(4, 3, ["d"], "blocked")],
   };
 
-  test("only fully open bundles, in rank order", () => {
-    expect(openBundles(course, lookup({ a: 1, b: 2, c: 1, x: 1, d: 5 })).map(b => b.id)).toEqual([1, 2, 3]);
-  });
-
-  test("atomic: one closed CRN excludes the bundle", () => {
-    expect(openBundles(course, lookup({ a: 1, b: 2, c: 0, x: 0 })).map(b => b.id)).toEqual([]);
-    expect(openBundles(course, lookup({ a: 0, b: 2, x: 1 })).map(b => b.id)).toEqual([2]);
-  });
-
-  test("unknown seats count as closed, blocked bundles never returned", () => {
-    expect(openBundles(course, lookup({ b: 1 })).map(b => b.id)).toEqual([]);
-    expect(openBundles(course, lookup({ d: 9 })).map(b => b.id)).toEqual([]);
+  // Atomic: one closed or unknown CRN excludes the bundle. Blocked bundles are never returned.
+  test.each([
+    ["all open, rank order", { a: 1, b: 2, c: 1, x: 1, d: 5 }, [1, 2, 3]],
+    ["shared CRN closed", { a: 1, b: 2, c: 0, x: 0 }, []],
+    ["one CRN closed", { a: 0, b: 2, x: 1 }, [2]],
+    ["missing seats count as closed", { b: 1 }, []],
+    ["blocked bundle open", { d: 9 }, []],
+  ])("%s", (_name, seats, ids) => {
+    expect(openBundles(course, lookup(seats)).map(b => b.id)).toEqual(ids);
   });
 });
 
@@ -58,25 +55,18 @@ describe("expandAny", () => {
     expect(bundles.every(b => b.length === 2 && ["31208", "59777"].includes(b[0]!))).toBe(true);
   });
 
-  test("excluded day removes all R labs", async () => {
-    expect(expandAny(await cs225(), { ...none, excludeDays: ["R"] })).toEqual([]);
-  });
-
-  test("excluded time overlaps", async () => {
-    // AYA is R 09:00-10:50, AYC/AYD 11:00-12:50.
-    const bundles = expandAny(await cs225(), { ...none, excludeTimes: [{ start: "08:00", end: "10:00" }] });
-    expect(bundles.some(b => b.includes("31234"))).toBe(false);
-    expect(bundles.length).toBe(12);
-    // Touching edges do not overlap.
-    const edge = expandAny(await cs225(), { ...none, excludeTimes: [{ start: "10:50", end: "11:00" }] });
-    expect(edge.length).toBe(14);
-    // Lecture time excluded removes everything.
-    expect(expandAny(await cs225(), { ...none, excludeTimes: [{ start: "11:30", end: "12:00" }] })).toEqual([]);
-  });
-
-  test("excluded instructor, case-insensitive substring", async () => {
-    expect(expandAny(await cs225(), { ...none, excludeInstructors: ["ERICK"] })).toEqual([]);
-    expect(expandAny(await cs225(), { ...none, excludeInstructors: ["nobody"] }).length).toBe(14);
+  // AYA (31234) is R 09:00-10:50, the other labs R 11:00-12:50, lectures MWF around 11:00-12:00.
+  test.each<[string, Partial<AnyFilters>, number]>([
+    ["excluded day removes every R lab", { excludeDays: ["R"] }, 0],
+    ["excluded time drops the overlapping lab", { excludeTimes: [{ start: "08:00", end: "10:00" }] }, 12],
+    ["touching time edges do not overlap", { excludeTimes: [{ start: "10:50", end: "11:00" }] }, 14],
+    ["excluded lecture time removes everything", { excludeTimes: [{ start: "11:30", end: "12:00" }] }, 0],
+    ["instructor match is a case-insensitive substring", { excludeInstructors: ["ERICK"] }, 0],
+    ["non-matching instructor keeps everything", { excludeInstructors: ["nobody"] }, 14],
+  ])("filters: %s", async (_name, filters, count) => {
+    const bundles = expandAny(await cs225(), { ...none, ...filters });
+    expect(bundles.length).toBe(count);
+    if (count === 12) expect(bundles.some(b => b.includes("31234"))).toBe(false);
   });
 
   test("ranks by min open seats, desc", async () => {

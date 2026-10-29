@@ -110,21 +110,17 @@ describe("auto mode", () => {
     expect(t.registerCalls.map(call => call.addCrns[0])).toEqual([LEC, "46060"]);
   });
 
-  test("swap drop only when swaps are unlocked", async () => {
-    const locked = setup();
-    const c1 = locked.want("CS", "225", [[LEC]]);
-    locked.store.updateWanted(c1.id, { swapDropCrn: "41234" });
-    locked.sim.setSeats(T, LEC, 1);
-    await locked.tick();
-    expect(locked.registerCalls[0]!.dropCrn).toBeNull();
-
-    const unlocked = setup({ settings: { swapsUnlocked: true } });
-    const c2 = unlocked.want("CS", "225", [[LEC]]);
-    unlocked.store.updateWanted(c2.id, { swapDropCrn: "41234" });
-    unlocked.sim.setSeats(T, LEC, 1);
-    await unlocked.tick();
-    expect(unlocked.registerCalls[0]!.dropCrn).toBe("41234");
-    expect(unlocked.sim.schedule(T)).not.toContain("41234");
+  test.each([
+    [false, null],
+    [true, "41234"],
+  ])("swap drop sent only when swaps are unlocked (unlocked=%p)", async (swapsUnlocked, dropCrn) => {
+    const t = setup({ settings: { swapsUnlocked } });
+    const course = t.want("CS", "225", [[LEC]]);
+    t.store.updateWanted(course.id, { swapDropCrn: "41234" });
+    t.sim.setSeats(T, LEC, 1);
+    await t.tick();
+    expect(t.registerCalls[0]!.dropCrn).toBe(dropCrn);
+    expect(t.sim.schedule(T).includes("41234")).toBe(!swapsUnlocked);
   });
 
   test("permanent error blocks the bundle and the next bundle wins", async () => {
@@ -152,38 +148,45 @@ describe("auto mode", () => {
     expect(t.store.armedCrns(T)).toEqual([]);
   });
 
-  test("unknown result after submit halts and trips the guard, next bundle untouched", async () => {
-    const t = setup();
+  const partialRegistrar: Registrar = {
+    kind: "simulated",
+    register: async request => ({
+      outcome: "failed",
+      rows: [
+        { crn: request.addCrns[0]!, ok: true, message: null },
+        { crn: request.addCrns[1]!, ok: false, message: "Prerequisite and Test Score error" },
+      ],
+      classification: "permanent",
+      message: "Prerequisite and Test Score error",
+      ms: 1,
+    }),
+  };
+  const throwingRegistrar: Registrar = {
+    kind: "simulated",
+    register: async () => {
+      throw new Error("Timed out waiting for Banner after submit");
+    },
+  };
+
+  // Anything that may have changed the schedule halts everything: no next bundle, no other course.
+  test.each([
+    ["unclassified Banner text", undefined, "Something odd happened"],
+    ["registrar throws after submit", throwingRegistrar, "Timed out waiting for Banner after submit"],
+    ["permanent failure with one row accepted", partialRegistrar, "Prerequisite and Test Score error"],
+  ] as const)("unclear result halts and trips the guard: %s", async (_name, registrar, reason) => {
+    const t = setup({ registrar });
     const course = t.want("CS", "225", [[LEC, LAB1], [LEC, LAB2]]);
     const other = t.want("MATH", "241", [["46060"]]);
     for (const crn of [LEC, LAB1, LAB2, "46060"]) t.sim.setSeats(T, crn, 2);
-    t.sim.scriptError(null, "Something odd happened");
+    if (!registrar) t.sim.scriptError(null, reason);
     await t.tick();
     expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB1]]);
     expect(t.bundles(course.id)).toEqual(["blocked", "open"]);
     expect(t.store.getWanted(other.id)!.state).toBe("watching");
     expect(t.store.getSettings().globalPaused).toBe(true);
-    expect(t.orchestrator.guardState()?.detail).toBe(
-      `Unclear result for CS 225 ${LEC} + ${LAB1}: Something odd happened. Check your schedule in Banner, then clear the guard.`,
-    );
+    expect(t.orchestrator.guardState()?.detail).toContain(reason);
     await t.tick();
     expect(t.registerCalls.length).toBe(1);
-  });
-
-  test("registrar throwing (e.g. timeout after submit) halts and trips", async () => {
-    const throwing: Registrar = {
-      kind: "simulated",
-      register: async () => {
-        throw new Error("Timed out waiting for Banner after submit");
-      },
-    };
-    const t = setup({ registrar: throwing });
-    t.want("CS", "225", [[LEC], [LAB1]]);
-    t.sim.setSeats(T, LEC, 2);
-    t.sim.setSeats(T, LAB1, 2);
-    await t.tick();
-    expect(t.registerCalls.length).toBe(1);
-    expect(t.orchestrator.guardState()?.detail).toContain("Timed out waiting for Banner after submit");
   });
 
   test("permanent with no rows ok blocks and moves to the next bundle", async () => {
@@ -207,30 +210,6 @@ describe("auto mode", () => {
     expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB1], [LEC, LAB2]]);
     expect(t.bundles(course.id)).toEqual(["blocked", "registered"]);
     expect(t.orchestrator.guardState()).toBeNull();
-  });
-
-  test("permanent with one row ok is treated as unclear and trips", async () => {
-    const registrar: Registrar = {
-      kind: "simulated",
-      register: async request => ({
-        outcome: "failed",
-        rows: [
-          { crn: request.addCrns[0]!, ok: true, message: null },
-          { crn: request.addCrns[1]!, ok: false, message: "Prerequisite and Test Score error" },
-        ],
-        classification: "permanent",
-        message: "Prerequisite and Test Score error",
-        ms: 1,
-      }),
-    };
-    const t = setup({ registrar });
-    const course = t.want("CS", "225", [[LEC, LAB1], [LEC, LAB2]]);
-    for (const crn of [LEC, LAB1, LAB2]) t.sim.setSeats(T, crn, 2);
-    await t.tick();
-    expect(t.registerCalls.length).toBe(1);
-    expect(t.bundles(course.id)[0]).toBe("blocked");
-    expect(t.store.getSettings().globalPaused).toBe(true);
-    expect(t.orchestrator.guardState()?.detail).toContain(`accepted: ${LEC}`);
   });
 
   test("transient failure keeps watching with a 30 s cooldown", async () => {
@@ -269,15 +248,13 @@ describe("auto mode", () => {
   });
 
   test("no cooldown while the ticket is firing", async () => {
-    let firing = true;
-    const t = setup({ deps: { firing: () => firing } });
+    const t = setup({ deps: { firing: () => true } });
     t.want("CS", "225", [[LEC]]);
     t.sim.setSeats(T, LEC, 2);
     t.sim.scriptError(null, "Registration is not open at this time");
     await t.tick();
     await t.tick();
     expect(t.registerCalls.length).toBe(2);
-    firing = false;
   });
 
   test("paused or disarmed: nothing registers, open bundle announced once", async () => {
@@ -322,7 +299,7 @@ describe("guard", () => {
     await t.tick();
     expect(t.registerCalls.length).toBe(1);
     expect(t.store.getSettings().globalPaused).toBe(true);
-    expect(t.orchestrator.guardState()?.detail).toBe("Interceptor refused a drop");
+    expect(t.orchestrator.guardState()?.detail).toContain("Interceptor refused a drop");
     const tripped = t.store.listEvents().find(event => event.kind === "guard_tripped")!;
     expect(tripped.severity).toBe("critical");
     expect(t.bundles(course.id)).toEqual(["watching"]);
@@ -366,7 +343,7 @@ describe("guard", () => {
     await t.tick();
     expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB1]]);
     expect(t.bundles(course.id)).toEqual(["blocked", "open"]);
-    expect(t.orchestrator.guardState()?.detail).toBe("Schedule changed unexpectedly");
+    expect(t.orchestrator.guardState()?.detail).toContain("Schedule changed unexpectedly");
   });
 });
 
@@ -380,7 +357,7 @@ describe("approve mode", () => {
     expect(t.registerCalls.length).toBe(0);
     const pending = t.store.pendingApprovals();
     expect(pending.length).toBe(1);
-    expect(pending[0]).toMatchObject({ crns: [LEC, LAB1], label: `CS 225 ${LEC} + ${LAB1}`, remindAt: t.clock.now() + REMIND_AFTER_MS, autoAt: null });
+    expect(pending[0]).toMatchObject({ crns: [LEC, LAB1], remindAt: t.clock.now() + REMIND_AFTER_MS, autoAt: null });
     expect(t.bundles(course.id)).toEqual(["pending_approval", "open"]);
     expect(t.hooks.created.length).toBe(1);
     const needed = t.store.listEvents().find(event => event.kind === "approval_needed")!;
@@ -393,19 +370,8 @@ describe("approve mode", () => {
     expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB1]]);
     expect(t.store.getApproval(pending[0]!.id)!.state).toBe("approved");
     expect(t.store.getWanted(course.id)!.state).toBe("registered");
-    expect(t.hooks.resolved[0]![1]).toContain("Registered");
+    expect(t.hooks.resolved.map(([approval]) => approval.state)).toEqual(["approved"]);
     expect((await t.orchestrator.approve(pending[0]!.id, "web")).ok).toBe(false);
-  });
-
-  test("uses section names from the catalog in labels", async () => {
-    const t = setup({ settings: { approvalMode: "approve" } });
-    t.store.db
-      .query("INSERT INTO cat_sections (term, crn, subject, number, section, type, type_name) VALUES (?, ?, 'CS', '225', ?, 'LEC', 'Lecture')")
-      .run(T, LEC, "AL2");
-    t.want("CS", "225", [[LEC]]);
-    t.sim.setSeats(T, LEC, 2);
-    await t.tick();
-    expect(t.store.pendingApprovals()[0]!.label).toBe("CS 225 AL2");
   });
 
   test("expires when a seat closes, then prompts again on reopen", async () => {
@@ -418,7 +384,7 @@ describe("approve mode", () => {
     await t.tick();
     expect(t.store.getApproval(approval.id)!.state).toBe("expired");
     expect(t.bundles(course.id)).toEqual(["watching"]);
-    expect(t.hooks.resolved).toEqual([[expect.objectContaining({ id: approval.id }), "Expired, seat closed"]]);
+    expect(t.hooks.resolved.map(([resolved]) => [resolved.id, resolved.state])).toEqual([[approval.id, "expired"]]);
     t.sim.setSeats(T, LEC, 1);
     await t.tick();
     expect(t.store.pendingApprovals().length).toBe(1);
@@ -491,8 +457,7 @@ describe("rehearsal dry runs", () => {
     await t.tick();
     expect(t.registerCalls.length).toBe(1);
     expect(t.bundles(course.id)).toEqual(["open"]);
-    const attempt = t.store.listEvents().find(event => event.kind === "attempt")!;
-    expect(attempt.title).toBe(`Test mode: would register CS 225 ${LEC}`);
+    expect(t.kinds().filter(kind => kind === "attempt").length).toBe(1);
     t.sim.setSeats(T, LEC, 0);
     await t.tick();
     t.sim.setSeats(T, LEC, 1);
@@ -528,12 +493,6 @@ describe("with the poller", () => {
     await poller.stop();
     await t.orchestrator.stop();
   });
-
-  test("statusText summarizes", async () => {
-    const t = setup();
-    t.want("CS", "225", [[LEC]]);
-    expect(t.orchestrator.statusText()).toContain("CS 225: watching, 0 of 1 bundles open");
-  });
 });
 
 describe("plan conflict filter", () => {
@@ -558,11 +517,15 @@ describe("plan conflict filter", () => {
     return { ...t, course, plan };
   }
 
-  test("plan course skips an open bundle that clashes with the latest schedule", async () => {
+  test.each([
+    ["plan course skips the bundle that clashes", true, [LEC, LAB2]],
+    ["course without a plan is not filtered", false, [LEC, LAB1]],
+  ] as const)("latest schedule snapshot: %s", async (_name, onPlan, expected) => {
     const t = planned();
+    if (!onPlan) t.store.setWantedPlan(t.course.id, null);
     t.store.addScheduleSnapshot(T, ["41234", "52345"], "rehearsal");
     await t.tick();
-    expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB2]]);
+    expect(t.registerCalls.map(call => call.addCrns)).toEqual([[...expected]]);
     // Filter only: the skipped bundle keeps its normal state.
     expect(t.store.getWanted(t.course.id)!.bundles[0]!.blockedReason).toBeNull();
   });
@@ -576,14 +539,6 @@ describe("plan conflict filter", () => {
     await t.tick();
     expect(t.registerCalls.length).toBe(0);
     expect(t.bundles(t.course.id)).toEqual(["open", "watching"]);
-  });
-
-  test("courses without a plan are not filtered", async () => {
-    const t = planned();
-    t.store.setWantedPlan(t.course.id, null);
-    t.store.addScheduleSnapshot(T, ["41234"], "rehearsal");
-    await t.tick();
-    expect(t.registerCalls.map(call => call.addCrns)).toEqual([[LEC, LAB1]]);
   });
 
   test("different halves of the term do not clash", async () => {

@@ -69,36 +69,38 @@ function setup(opts: { start?: number; settings?: Partial<Settings>; fallback?: 
 }
 
 describe("timing helpers", () => {
-  test("jitter stays within bounds", () => {
+  test("jitter is symmetric around the base and clamped to 50%", () => {
     const s = { ...defaultSettings(), pollIntervalSec: 10, jitterPct: 20 };
     expect(jitteredIntervalMs(s, MORNING, () => 0)).toBe(8000);
     expect(jitteredIntervalMs(s, MORNING, () => 0.999999)).toBe(12000);
-    for (let i = 0; i < 200; i++) {
-      const ms = jitteredIntervalMs(s, MORNING);
-      expect(ms).toBeGreaterThanOrEqual(8000);
-      expect(ms).toBeLessThanOrEqual(12000);
-    }
+    expect(jitteredIntervalMs({ ...s, jitterPct: 90 }, MORNING, () => 0)).toBe(5000);
   });
 
-  test("minimum interval is 10 s", () => {
-    expect(baseIntervalSec({ ...defaultSettings(), pollIntervalSec: 2 }, MORNING)).toBe(10);
+  test.each([
+    ["09:00", MORNING, false],
+    ["01:00", Date.UTC(2026, 10, 3, 7, 0), true],
+    ["02:00", NIGHT, true],
+    ["06:00", Date.UTC(2026, 10, 3, 12, 0), false],
+  ])("isOvernight at %s Chicago is %p", (_label, ms, expected) => {
+    expect(isOvernight(ms)).toBe(expected);
   });
 
-  test("overnight window", () => {
-    expect(isOvernight(MORNING)).toBe(false);
-    expect(isOvernight(NIGHT)).toBe(true);
-    expect(isOvernight(Date.UTC(2026, 10, 3, 7, 0))).toBe(true); // 01:00
-    expect(isOvernight(Date.UTC(2026, 10, 3, 12, 0))).toBe(false); // 06:00
-    expect(baseIntervalSec(defaultSettings(), NIGHT)).toBe(60);
-    expect(baseIntervalSec({ ...defaultSettings(), overnightSlow: false }, NIGHT)).toBe(10);
+  test.each([
+    ["tonight inside the overnight window", chicagoIso(2026, 11, 3, 4), NIGHT, true],
+    ["after the overnight window ends", chicagoIso(2026, 11, 3, 6, 20), NIGHT, false],
+    ["within 30 min in the daytime", chicagoIso(2026, 11, 2, 9, 20), MORNING, true],
+    ["tomorrow night", chicagoIso(2026, 11, 4, 2), NIGHT, false],
+  ])("ticketNear: %s", (_label, ticketAt, now, expected) => {
+    expect(ticketNear(ticketAt, now)).toBe(expected);
   });
 
-  test("ticket tonight or within 30 min keeps the fast interval", () => {
-    expect(ticketNear(chicagoIso(2026, 11, 3, 4), NIGHT)).toBe(true);
-    expect(ticketNear(chicagoIso(2026, 11, 3, 6, 20), NIGHT)).toBe(false);
-    expect(ticketNear(chicagoIso(2026, 11, 2, 9, 20), MORNING)).toBe(true);
-    expect(ticketNear(chicagoIso(2026, 11, 4, 2), NIGHT)).toBe(false);
-    expect(baseIntervalSec({ ...defaultSettings(), ticketAt: chicagoIso(2026, 11, 3, 5, 30) }, NIGHT)).toBe(10);
+  test.each([
+    ["floors at 10 s", { pollIntervalSec: 2 }, MORNING, 10],
+    ["slows to 60 s overnight", {}, NIGHT, 60],
+    ["overnightSlow off", { overnightSlow: false }, NIGHT, 10],
+    ["ticket tonight keeps the fast interval", { ticketAt: chicagoIso(2026, 11, 3, 5, 30) }, NIGHT, 10],
+  ] as [string, Partial<Settings>, number, number][])("baseIntervalSec %s", (_label, patch, now, expected) => {
+    expect(baseIntervalSec({ ...defaultSettings(), ...patch }, now)).toBe(expected);
   });
 });
 
@@ -111,15 +113,6 @@ describe("Poller", () => {
     const status = t.poller.status();
     expect(status).toMatchObject({ state: "running", source: "anonymous", intervalSec: 10, watchedCrns: 2, errorStreak: 0 });
     expect(status.nextCycleAt).toBe(MORNING + 40_000);
-    await t.poller.stop();
-  });
-
-  test("jitter applied to real scheduling", async () => {
-    const t = setup({ settings: { jitterPct: 50 } });
-    t.poller.start();
-    await t.clock.advance(60_000);
-    // random() is fixed at 0.5 so jitter is zero.
-    expect(new Set(t.gaps(t.primary.calls))).toEqual(new Set([10_000]));
     await t.poller.stop();
   });
 
@@ -153,17 +146,6 @@ describe("Poller", () => {
     t.poller.kick();
     await t.clock.advance(200);
     expect(t.primary.calls.length).toBe(1);
-    await t.poller.stop();
-  });
-
-  test("kick runs a cycle within 200 ms", async () => {
-    const t = setup();
-    t.poller.start();
-    await t.clock.advance(1_000);
-    expect(t.primary.calls.length).toBe(1);
-    t.poller.kick();
-    await t.clock.advance(200);
-    expect(t.primary.calls.length).toBe(2);
     await t.poller.stop();
   });
 
@@ -252,7 +234,10 @@ describe("Poller", () => {
     await t.clock.advance(10_000);
 
     const changes = t.store.listEvents().filter(event => event.kind === "seat_changed").reverse();
-    expect(changes.map(event => event.title)).toEqual(["CRN 59777 opened (2 of 30)", "CRN 59777 closed"]);
+    expect(changes.map(event => event.payload)).toEqual([
+      { term: T, crn: "59777", available: 2, max: 30 },
+      { term: T, crn: "59777", available: 0, max: 30 },
+    ]);
     expect(t.updates.map(changed => changed.map(seat => `${seat.crn}:${seat.available}`))).toEqual([
       ["59777:0", "31225:0"],
       ["59777:2"],

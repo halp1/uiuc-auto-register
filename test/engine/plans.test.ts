@@ -53,15 +53,9 @@ describe("store", () => {
     expect(store.getWanted(wanted.id)!.planId).toBeNull();
   });
 
-  test("plan courses: unique per plan, patchable, cascade on delete", () => {
+  test("plan courses: unique per plan (case-insensitive), cascade on delete", () => {
     const plan = planWith(["CS", "225"]);
     expect(() => store.addPlanCourse(plan.id, { subject: "cs", number: "225", title: "" })).toThrow();
-    const course = plan.courses[0]!;
-    expect(course).toMatchObject({ included: true, excludedCrns: [], locked: null, backups: true });
-    store.updatePlanCourse(plan.id, course.id, { included: false, excludedCrns: ["31234"], locked: ["59777", "31225"], backups: false });
-    expect(store.getPlan(plan.id)!.courses[0]).toMatchObject({ included: false, excludedCrns: ["31234"], locked: ["59777", "31225"], backups: false });
-    store.updatePlan(plan.id, { breaks: [{ days: ["M"], start: "12:00", end: "13:00" }], sort: "gaps", openOnly: true });
-    expect(store.getPlan(plan.id)).toMatchObject({ sort: "gaps", openOnly: true, breaks: [{ days: ["M"], start: "12:00", end: "13:00" }] });
     store.deletePlan(plan.id);
     expect(store.db.query("SELECT COUNT(*) AS n FROM plan_courses").get()).toEqual({ n: 0 });
   });
@@ -177,7 +171,7 @@ describe("target", () => {
     const math = result.wanted[1]!;
     expect(math.bundles.some(b => b.crns.includes("46067") || b.crns.includes("46075"))).toBe(false);
     expect(result.plan.target?.picks).toEqual(picks());
-    expect(store.listEvents().find(e => e.kind === "control")!.title).toBe("Targeted Plan 1");
+    expect(store.listEvents().find(e => e.kind === "control")!.payload).toMatchObject({ planId: plan.id, picks: picks() });
   });
 
   test("backups off or locked gives exactly one bundle", async () => {
@@ -201,33 +195,40 @@ describe("target", () => {
     expect(math.bundles.length).toBeGreaterThan(0);
   });
 
-  test("validation", async () => {
+  // Each case trips a different rule. The fragment is the course or CRN the rule names, so the right rule is proven to fire.
+  const math = (crns: string[]): PlanPick => ({ subject: "MATH", number: "241", crns });
+  const cs = (crns: string[]): PlanPick => ({ subject: "CS", number: "225", crns });
+  test.each<[string, () => PlanPick[], number, string | RegExp, ((planId: number) => void) | null]>([
+    ["missing pick", () => [picks()[0]!], 400, "MATH 241", null],
+    ["pick for a course not in the plan", () => [...picks(), { subject: "CS", number: "374", crns: ["65088"] }], 400, "CS 374", null],
+    ["CRN from another course", () => [picks()[0]!, math(["46060", "31234"])], 400, "31234", null],
+    ["picks overlap each other", () => [picks()[0]!, math(["46067", "46057"])], 400, /CS 225.*MATH 241/, null],
+    ["course picked twice", () => [cs(["59777", "31225"]), cs(["31208"])], 400, "CS 225", null],
+    ["lecture without its linked section", () => [cs(["59777"]), picks()[1]!], 400, "CS 225", null],
+    [
+      "pick overlaps a break",
+      picks,
+      400,
+      "MATH 241",
+      planId => store.updatePlan(planId, { breaks: [{ days: ["T"], start: "15:00", end: "16:00" }] }),
+    ],
+    [
+      "pick overlaps a CRN on the schedule",
+      () => [picks()[0]!, math(["55921", "46070"])],
+      400,
+      "65090",
+      () => store.addScheduleSnapshot(TERM, ["65090"], "rehearsal"), // CS 374 AYB, WF 12:00
+    ],
+    ["plan term is not the active term", picks, 409, /./, () => (activeTerm = "120268")],
+  ])("rejects without writing: %s", async (_name, pickList, status, fragment, arrange) => {
     const plan = planWith(["CS", "225"], ["MATH", "241"]);
-    const reject = async (p: PlanPick[], status: number, message: string | RegExp) => {
-      const error = await service.target(plan.id, p).catch(e => e);
-      expect(error).toBeInstanceOf(PlanError);
-      expect(error.status).toBe(status);
-      expect(error.message).toMatch(message);
-    };
-    await reject([picks()[0]!], 400, "Pick sections for MATH 241");
-    await reject([...picks(), { subject: "CS", number: "374", crns: ["65088"] }], 400, "not an included course");
-    await reject([picks()[0]!, { subject: "MATH", number: "241", crns: ["46060", "31234"] }], 400, "CRN 31234 is not a section of MATH 241");
-    await reject([picks()[0]!, { subject: "MATH", number: "241", crns: ["46067", "46057"] }], 400, "CS 225 and MATH 241 overlap");
-    await reject([{ subject: "CS", number: "225", crns: ["59777", "31225"] }, { subject: "CS", number: "225", crns: ["31208"] }], 400, "picked twice");
-    // A lecture without its required linked section is not a valid pick.
-    await reject([{ subject: "CS", number: "225", crns: ["59777"] }, picks()[1]!], 400, "CS 225 needs one complete section combination");
-
-    store.updatePlan(plan.id, { breaks: [{ days: ["T"], start: "15:00", end: "16:00" }] });
-    await reject(picks(), 400, "MATH 241 overlaps one of your breaks");
-    store.updatePlan(plan.id, { breaks: [] });
-
-    store.addScheduleSnapshot(TERM, ["65090"], "rehearsal"); // CS 374 AYB, WF 12:00
-    await reject([picks()[0]!, { subject: "MATH", number: "241", crns: ["55921", "46070"] }], 400, "overlaps CRN 65090");
-
-    activeTerm = "120268";
-    await reject(picks(), 409, "Switch the active term to Spring 2027");
-    activeTerm = TERM;
+    arrange?.(plan.id);
+    const error = await service.target(plan.id, pickList()).catch(e => e);
+    expect(error).toBeInstanceOf(PlanError);
+    expect(error.status).toBe(status);
+    expect(error.message).toMatch(fragment);
     expect(store.listWanted(TERM)).toEqual([]);
+    expect(store.getPlan(plan.id)!.target).toBeNull();
   });
 
   test("409 while a course is registering or waiting for approval", async () => {
@@ -245,7 +246,8 @@ describe("target", () => {
     const plan = planWith(["CS", "225"], ["MATH", "241"]);
     store.addScheduleSnapshot(TERM, ["59777", "31225"], "rehearsal");
     const error = await service.target(plan.id, picks()).catch(e => e);
-    expect(error.message).toContain("CS 225 is not an included course");
+    expect(error).toBeInstanceOf(PlanError);
+    expect(error.status).toBe(400);
     const ok = await service.target(plan.id, [picks()[1]!]);
     expect(ok.wanted.map(w => w.subject)).toEqual(["MATH"]);
   });

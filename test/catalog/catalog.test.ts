@@ -10,12 +10,14 @@ const T = "120271";
 const fixture = (name: string) => Bun.file(new URL(`../fixtures/${name}`, import.meta.url)).text();
 
 describe("explorer parsing", () => {
-  test("to24h", () => {
-    expect(to24h("09:00AM")).toBe("09:00");
-    expect(to24h("12:50PM")).toBe("12:50");
-    expect(to24h("12:00AM")).toBe("00:00");
-    expect(to24h("01:45PM")).toBe("13:45");
-    expect(to24h("ARRANGED")).toBeNull();
+  test.each([
+    ["09:00AM", "09:00"],
+    ["12:50PM", "12:50"],
+    ["12:00AM", "00:00"],
+    ["01:45PM", "13:45"],
+    ["ARRANGED", null],
+  ])("to24h(%p) is %p", (raw, expected) => {
+    expect(to24h(raw)).toBe(expected);
   });
 
   test("course detail", async () => {
@@ -89,35 +91,29 @@ describe("search", () => {
 
   const codes = (q: string) => search(store, T, q).map(hit => `${hit.subject} ${hit.number}`);
 
-  test("finds CS 225 by many spellings", () => {
-    for (const q of ["225", "cs 225", "cs225", "CS 225", "data struct", "Data Structures", "cs 22"]) {
-      expect(codes(q)[0]).toBe("CS 225");
-    }
+  test.each([
+    ...["225", "cs 225", "cs225", "CS 225", "data struct", "Data Structures", "cs 22", "erickson", "59777"].map(q => [q, "CS 225"]),
+    ["46060", "MATH 241"],
+  ])("%p ranks %p first", (q, expected) => {
+    expect(codes(q)[0]).toBe(expected);
   });
 
-  test("instructor last name", () => {
-    const hits = search(store, T, "erickson");
-    expect(hits[0]).toMatchObject({ subject: "CS", number: "225", matchedInstructor: "Erickson, J" });
-    expect(codes("pascaleff")).toEqual(["MATH 241"]);
+  test.each([
+    ["pascaleff", ["MATH 241"]],
+    ["cs", ["CS 225", "CS 374"]],
+    ["calc", ["MATH 241"]],
+    ["algorithms", ["CS 374"]],
+    ["", []],
+    ["zzzzqqq", []],
+    ['"*:()', []],
+  ])("%p finds exactly %p", (q, expected) => {
+    expect(codes(q)).toEqual(expected);
+  });
+
+  test("hits say which instructor or CRN matched, and other terms are separate", () => {
+    expect(search(store, T, "erickson")[0]).toMatchObject({ matchedInstructor: "Erickson, J" });
+    expect(search(store, T, "59777")[0]).toMatchObject({ matchedCrn: "59777" });
     expect(codes("fox")).toContain("CS 374");
-  });
-
-  test("CRN exact match first", () => {
-    const hits = search(store, T, "59777");
-    expect(hits[0]).toMatchObject({ subject: "CS", number: "225", matchedCrn: "59777" });
-    expect(codes("46060")[0]).toBe("MATH 241");
-  });
-
-  test("subject listing and partial words", () => {
-    expect(codes("cs")).toEqual(["CS 225", "CS 374"]);
-    expect(codes("calc")).toEqual(["MATH 241"]);
-    expect(codes("algorithms")).toEqual(["CS 374"]);
-  });
-
-  test("nonsense and empty queries", () => {
-    expect(search(store, T, "")).toEqual([]);
-    expect(search(store, T, "zzzzqqq")).toEqual([]);
-    expect(search(store, T, '"*:()')).toEqual([]);
     expect(search(store, "120268", "225")).toEqual([]);
   });
 

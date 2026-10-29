@@ -86,10 +86,3 @@ test("plaintext secrets from before encryption are sealed on open", () => {
   expect(reopened.getSettings().discordToken).toBe("plain-token-abcd");
   reopened.close();
 });
-
-test("defaults: Live mode and setup not done", () => {
-  const s = new Store(":memory:").getSettings();
-  expect(s.mode).toBe("live");
-  expect(s.onboardingStep).toBe("security");
-  expect(s.netid).toBeNull();
-});

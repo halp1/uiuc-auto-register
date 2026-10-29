@@ -15,11 +15,8 @@ describe("totp", () => {
     expect(totp(SECRET, 20_000_000_000_000)).toBe("353130");
   });
 
-  test("accepts lowercase, spaces and padding", () => {
+  test("secrets: lowercase, spaces and padding accepted, malformed or short rejected", () => {
     expect(totp("gezd gnbv gy3t qojq gezd gnbv gy3t qojq==", 59_000)).toBe("287082");
-  });
-
-  test("rejects malformed or short seeds", () => {
     expect(() => totp("short")).toThrow(InvalidTotpSecret);
     expect(() => totp("INVALID!BASE32*SEED")).toThrow(InvalidTotpSecret);
     expect(isValidTotpSecret("")).toBe(false);
@@ -28,21 +25,16 @@ describe("totp", () => {
 });
 
 describe("TotpWindowTracker", () => {
-  test("uses the current window early in the window", async () => {
-    const clock = new FakeClock(30_000 * 1000 + 5_000);
+  test.each([
+    ["uses the current window early in the window", 5_000, 1000],
+    ["waits for the next edge when more than 22 s into the window", 23_000, 1001],
+  ])("%s", async (_name, offset, expected) => {
+    const clock = new FakeClock(30_000 * 1000 + offset);
     const tracker = new TotpWindowTracker();
-    expect(await tracker.acquire(clock)).toBe(1000);
-  });
-
-  test("waits for the next edge when more than 22 s into the window", async () => {
-    const start = 30_000 * 1000 + 23_000;
-    const clock = new FakeClock(start);
-    const tracker = new TotpWindowTracker();
-    expect(tracker.waitMs(start)).toBeGreaterThan(6_000);
     const p = tracker.acquire(clock);
     await clock.advance(8_000);
-    expect(await p).toBe(1001);
-    expect(clock.now()).toBeGreaterThanOrEqual(30_000 * 1001);
+    expect(await p).toBe(expected);
+    expect(totpWindow(clock.now())).toBeGreaterThanOrEqual(expected);
   });
 
   test("never reuses a window", async () => {

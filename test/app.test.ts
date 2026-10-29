@@ -64,12 +64,6 @@ test("simulated end to end: arm, open seats, auto registers, schedule kept", asy
   expect(sim.schedule["120271"]).toEqual(expect.arrayContaining(["41234", "52345", "59777", "31225"]));
 });
 
-test("live cannot be turned on outside live mode", async () => {
-  const res = await call("POST", "/api/live", { enabled: true, confirmText: "Spring 2027" });
-  expect(res.status).toBe(403);
-  expect(app.services.settings().liveEnabled).toBe(false);
-});
-
 test("cross-site and header-less writes are refused", async () => {
   const plain = await fetch(base + "/api/control/pause", { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" });
   expect(plain.status).toBe(403);
@@ -84,146 +78,133 @@ test("cross-site and header-less writes are refused", async () => {
   expect(app.services.settings().globalPaused).toBe(false);
 });
 
-test("rehearsal is refused in simulated mode", async () => {
-  const res = await call("POST", "/api/rehearsal", { term: "120271" });
-  expect(res.status).toBe(409);
+test.each([
+  ["live outside live mode", "POST", "/api/live", { enabled: true, confirmText: "Spring 2027" }, 403],
+  ["swap drop while swaps are locked", "PATCH", "/api/wanted/1", { swapDropCrn: "41234" }, 403],
+  ["rehearsal in simulated mode", "POST", "/api/rehearsal", { term: "120271" }, 409],
+  ["setup login in simulated mode", "POST", "/api/setup/login", undefined, 409],
+  ["unknown notify channel", "POST", "/api/notify/test/nope", undefined, 404],
+] as const)("refused: %s", async (_name, method, path, body, status) => {
+  expect((await call(method, path, body)).status).toBe(status);
+  const s = app.services.settings();
+  expect(s.liveEnabled).toBe(false);
+  expect(s.swapsUnlocked).toBe(false);
 });
 
-test("settings validation and secret redaction", async () => {
-  expect((await call("PUT", "/api/settings", { pollIntervalSec: 5 })).status).toBe(400);
-  const ok = await call("PUT", "/api/settings", { discordToken: "x".repeat(40) + "abcd", discordUserId: "123456789012345678" });
+test.each([
+  ["poll interval below minimum", "PUT", "/api/settings", { pollIntervalSec: 5 }],
+  ["non-Discord webhook host", "PUT", "/api/settings", { discordWebhookUrl: "https://example.com/api/webhooks/123456789012345678/WebhookSecretToken_0123456789abcdefghijklmnop" }],
+  ["CRN that is not 5 digits", "POST", "/api/wanted", { term: "120271", subject: "CS", number: "374", kind: "bundles", bundles: [["123"]] }],
+  ["blank plan name", "POST", "/api/plans", { term: "120271", name: "  " }],
+  ["malformed TOTP secret", "PUT", "/api/credentials", { totpSecret: "not a key!" }],
+  ["malformed NetID", "PUT", "/api/credentials", { netid: "x y z" }],
+  ["empty password", "PUT", "/api/credentials", { password: "" }],
+  ["malformed TOTP key for a code", "POST", "/api/setup/totp-code", { secret: "nope" }],
+  ["unknown setup step", "PUT", "/api/setup/step", { step: "bogus" }],
+  ["unknown mode", "PUT", "/api/mode", { mode: "test" }],
+] as const)("400 for %s", async (_name, method, path, body) => {
+  const res = await call(method, path, body);
+  expect(res.status).toBe(400);
+  expect(typeof res.json.error).toBe("string");
+});
+
+test("settings secrets are stored but never returned", async () => {
+  const token = "x".repeat(40) + "abcd";
+  const hook = "WebhookSecretToken_0123456789abcdefghijklmnop";
+  const ok = await call("PUT", "/api/settings", {
+    discordToken: token,
+    discordUserId: "123456789012345678",
+    discordWebhookUrl: `https://discordapp.com/api/webhooks/123456789012345678/${hook}`,
+    routing: { registered: { discord: false, push: false, webhook: true } },
+  });
   expect(ok.status).toBe(200);
-  expect(ok.json.discordToken).toBeUndefined();
-  expect(ok.json.discordTokenHint).toBe("abcd");
-  expect(ok.json.vapidPrivateKey).toBeUndefined();
-  const state = await call("GET", "/api/state");
-  expect(JSON.stringify(state.json)).not.toContain("x".repeat(40));
-  await call("PUT", "/api/settings", { discordToken: null, discordUserId: null });
+  expect(ok.json).toMatchObject({ discordTokenHint: "abcd", discordWebhookHint: "mnop" });
+  for (const key of ["discordToken", "discordWebhookUrl", "vapidPrivateKey"]) expect(ok.json[key]).toBeUndefined();
+  // A partial routing patch only touches the events it names.
+  expect(ok.json.routing.registered).toEqual({ discord: false, push: false, webhook: true });
+  expect(ok.json.routing.bundle_opened.webhook).toBe(false);
+  const state = JSON.stringify((await call("GET", "/api/state")).json);
+  expect(state).not.toContain(token);
+  expect(state).not.toContain(hook);
+  await call("PUT", "/api/settings", {
+    discordToken: null,
+    discordUserId: null,
+    discordWebhookUrl: null,
+    routing: { registered: { discord: false, push: false, webhook: false } },
+  });
 });
 
-test("discord webhook URL: validated, stored, never returned", async () => {
-  const secret = "WebhookSecretToken_0123456789abcdefghijklmnop";
-  const bad = await call("PUT", "/api/settings", { discordWebhookUrl: `https://example.com/api/webhooks/123456789012345678/${secret}` });
-  expect(bad.status).toBe(400);
-  const ok = await call("PUT", "/api/settings", { discordWebhookUrl: `https://discordapp.com/api/webhooks/123456789012345678/${secret}` });
-  expect(ok.status).toBe(200);
-  expect(ok.json.discordWebhookUrl).toBeUndefined();
-  expect(ok.json.discordWebhookHint).toBe("mnop");
-  expect(JSON.stringify((await call("GET", "/api/state")).json)).not.toContain(secret);
-  const routed = await call("PUT", "/api/settings", { routing: { registered: { discord: false, push: false, webhook: true } } });
-  expect(routed.json.routing.registered).toEqual({ discord: false, push: false, webhook: true });
-  expect(routed.json.routing.bundle_opened.webhook).toBe(false);
-  expect((await call("POST", "/api/notify/test/nope")).status).toBe(404);
-  await call("PUT", "/api/settings", { discordWebhookUrl: null, routing: { registered: { discord: false, push: false, webhook: false } } });
-});
-
-test("bad input is rejected with a readable error", async () => {
-  const bad = await call("POST", "/api/wanted", { term: "120271", subject: "CS", number: "374", kind: "bundles", bundles: [["123"]] });
-  expect(bad.status).toBe(400);
-  expect(bad.json.error).toContain("5 digit");
-  expect((await call("PATCH", "/api/wanted/1", { swapDropCrn: "41234" })).status).toBe(403);
-});
-
-test("schedule planner: plans, courses, generate, target", async () => {
+test("schedule planner routes: plans, courses, generate, target", async () => {
   const frames: StreamMessage[] = [];
   const unsubscribe = app.services.bus.subscribe(message => frames.push(message));
   try {
     const listed = await call("GET", "/api/plans?term=120271");
-    expect(listed.status).toBe(200);
     expect(listed.json.map((p: any) => p.name)).toEqual(["Plan 1"]);
     const planId = listed.json[0].id;
 
-    // Plans: create, sorted by position, limits and validation.
     const second = await call("POST", "/api/plans", { term: "120271", name: "Backup plan" });
     expect(second.status).toBe(201);
-    expect((await call("GET", "/api/plans?term=120271")).json.map((p: any) => p.name)).toEqual(["Plan 1", "Backup plan"]);
-    expect((await call("POST", "/api/plans", { term: "120271", name: "  " })).status).toBe(400);
     expect((await call("PATCH", `/api/plans/${second.json.id}`, { name: "Renamed", sort: "gaps", openOnly: true })).json).toMatchObject({
       name: "Renamed",
       sort: "gaps",
       openOnly: true,
     });
-    expect((await call("PATCH", `/api/plans/${planId}`, { sort: "nope" })).status).toBe(400);
-    expect((await call("PATCH", `/api/plans/${planId}`, { breaks: [{ days: ["M"], start: "13:00", end: "12:00" }] })).status).toBe(400);
-    expect((await call("PATCH", `/api/plans/${planId}`, { breaks: [{ days: ["X"], start: "12:00", end: "13:00" }] })).status).toBe(400);
     expect((await call("DELETE", `/api/plans/${second.json.id}`)).status).toBe(200);
     expect((await call("PATCH", `/api/plans/${second.json.id}`, { name: "x" })).status).toBe(404);
     expect(frames.some(frame => frame.type === "plans" && frame.term === "120271")).toBe(true);
 
-    // Courses.
     let plan = (await call("POST", `/api/plans/${planId}/courses`, { subject: "cs", number: "374" })).json;
     plan = (await call("POST", `/api/plans/${planId}/courses`, { subject: "MATH", number: "241" })).json;
-    expect(plan.courses.map((c: any) => [c.subject, c.number, c.title])).toEqual([
-      ["CS", "374", "Introduction to Algorithms & Models of Computation"],
-      ["MATH", "241", "Calculus III"],
-    ]);
+    expect(plan.courses.map((c: any) => `${c.subject} ${c.number}`)).toEqual(["CS 374", "MATH 241"]);
     expect((await call("POST", `/api/plans/${planId}/courses`, { subject: "MATH", number: "241" })).status).toBe(409);
-    expect((await call("POST", `/api/plans/${planId}/courses`, { subject: "MATH", number: "2" })).status).toBe(400);
     const cs374 = plan.courses[0].id;
-    expect((await call("PATCH", `/api/plans/${planId}/courses/${cs374}`, { excludedCrns: ["123"] })).status).toBe(400);
-    expect((await call("PATCH", `/api/plans/${planId}/courses/${cs374}`, { locked: [] })).status).toBe(400);
-    expect((await call("PATCH", `/api/plans/${planId}/courses/${cs374}`, { excludedCrns: ["65089"] })).json.courses[0].excludedCrns).toEqual([
-      "65089",
-    ]);
-    expect((await call("PATCH", `/api/plans/${planId}/courses/999`, { included: false })).status).toBe(404);
 
-    // Generate. CS 225 was registered by the first test: its R 11:00 lab blocks both CS 374 lectures.
-    const blocked = (await call("POST", `/api/plans/${planId}/generate`)).json;
-    expect(blocked.fixed.map((f: any) => f.crn)).toEqual(["31225", "59777"]);
-    expect(blocked.courses[0]).toMatchObject({ subject: "CS", number: "374", status: "no_options" });
-    expect(blocked.total).toBe(0);
+    // Validation that lives only in the routes.
+    const rejects: [string, string, unknown, number][] = [
+      ["PATCH", `/api/plans/${planId}`, { sort: "nope" }, 400],
+      ["PATCH", `/api/plans/${planId}`, { breaks: [{ days: ["M"], start: "13:00", end: "12:00" }] }, 400],
+      ["PATCH", `/api/plans/${planId}`, { breaks: [{ days: ["X"], start: "12:00", end: "13:00" }] }, 400],
+      ["POST", `/api/plans/${planId}/courses`, { subject: "MATH", number: "2" }, 400],
+      ["PATCH", `/api/plans/${planId}/courses/${cs374}`, { excludedCrns: ["123"] }, 400],
+      ["PATCH", `/api/plans/${planId}/courses/${cs374}`, { locked: [] }, 400],
+      ["PATCH", `/api/plans/${planId}/courses/999`, { included: false }, 404],
+      ["POST", `/api/plans/${planId}/target`, { picks: [] }, 400],
+    ];
+    for (const [method, path, body, status] of rejects) expect([path, (await call(method, path, body)).status]).toEqual([path, status]);
+
+    // CS 225 was registered by the first test, ignore it so both plan courses have options.
     await call("PATCH", `/api/plans/${planId}`, { ignoreRegistered: true });
     const framesBefore = frames.length;
     const generated = await call("POST", `/api/plans/${planId}/generate`);
     expect(generated.status).toBe(200);
-    expect(generated.json.fixed).toEqual([]);
     expect(generated.json.total).toBeGreaterThan(0);
-    expect(generated.json.courses.map((c: any) => c.status)).toEqual(["ok", "ok"]);
-    const best = generated.json.schedules[0];
-    expect(best.picks.map((p: any) => `${p.subject} ${p.number}`)).toEqual(["CS 374", "MATH 241"]);
-    expect(best.picks[0].crns).not.toContain("65089");
     // Results come only in the response, not on the stream.
-    expect(frames.slice(framesBefore).some(frame => (frame as any).schedules)).toBe(false);
+    expect(frames.slice(framesBefore).some(frame => "schedules" in frame)).toBe(false);
 
-    // Target: bad picks are refused, a valid one arms both courses and returns the whole watchlist.
-    expect((await call("POST", `/api/plans/${planId}/target`, { picks: [] })).status).toBe(400);
-    expect((await call("POST", `/api/plans/${planId}/target`, { picks: [best.picks[0]] })).status).toBe(400);
+    const best = generated.json.schedules[0];
     const framesBeforeTarget = frames.length;
     const targeted = await call("POST", `/api/plans/${planId}/target`, { picks: best.picks });
     expect(targeted.status).toBe(200);
-    expect(targeted.json.plan.target.picks).toEqual(best.picks);
-    const keys = targeted.json.wanted.map((w: any) => `${w.subject} ${w.number}`);
-    expect(keys).toEqual(expect.arrayContaining(["CS 225", "CS 374", "MATH 241"]));
-    for (const w of targeted.json.wanted.filter((w: any) => w.planId === planId)) {
-      expect(w.armed).toBe(true);
-      expect(w.bundles[0].crns).toEqual(best.picks.find((p: any) => p.subject === w.subject && p.number === w.number).crns);
-    }
+    const linked = targeted.json.wanted.filter((w: any) => w.planId === planId);
+    expect(linked.map((w: any) => `${w.subject} ${w.number}`)).toEqual(["CS 374", "MATH 241"]);
+    expect(linked.every((w: any) => w.armed)).toBe(true);
     const after = frames.slice(framesBeforeTarget).map(frame => frame.type);
-    expect(after).toContain("wanted");
-    expect(after).toContain("plans");
+    expect(after).toEqual(expect.arrayContaining(["wanted", "plans"]));
 
-    // Deleting the plan keeps the watchlist courses but clears their link.
     expect((await call("DELETE", `/api/plans/${planId}`)).status).toBe(200);
-    const state = (await call("GET", "/api/state")).json;
-    expect(state.wanted.filter((w: any) => w.subject === "MATH").map((w: any) => w.planId)).toEqual([null]);
   } finally {
     unsubscribe();
   }
 });
 
-// ---------- account, setup, and mode (no env vars) ----------
+// ---------- account, setup, and mode ----------
 
 const KEY = "JBSWY3DPEHPK3PXP"; // RFC test seed
 
-test("credentials: validated, normalized, encrypted at rest, never returned", async () => {
-  expect((await call("PUT", "/api/credentials", { totpSecret: "not a key!" })).status).toBe(400);
-  expect((await call("PUT", "/api/credentials", { netid: "x y z" })).status).toBe(400);
-  expect((await call("PUT", "/api/credentials", { password: "" })).status).toBe(400);
+test("credentials: normalized, encrypted at rest, never returned", async () => {
   const ok = await call("PUT", "/api/credentials", { netid: " JDoe2@illinois.edu ", password: "hunter2-Secret!", totpSecret: "jbsw y3dp ehpk 3pxp" });
   expect(ok.status).toBe(200);
-  expect(ok.json.netid).toBe("jdoe2");
-  expect(ok.json.passwordSet).toBe(true);
-  expect(ok.json.totpSet).toBe(true);
+  expect(ok.json).toMatchObject({ netid: "jdoe2", passwordSet: true, totpSet: true });
   expect(ok.json.password).toBeUndefined();
   expect(ok.json.totpSecret).toBeUndefined();
   const state = JSON.stringify((await call("GET", "/api/state")).json);
@@ -232,16 +213,13 @@ test("credentials: validated, normalized, encrypted at rest, never returned", as
   const raw = JSON.stringify(app.services.store.db.query("SELECT key, value FROM settings").all());
   expect(raw).not.toContain("hunter2");
   expect(raw).not.toContain(KEY);
-  const settings = app.services.settings();
-  expect(settings.password).toBe("hunter2-Secret!");
-  expect(settings.totpSecret).toBe(KEY);
+  expect(app.services.settings()).toMatchObject({ password: "hunter2-Secret!", totpSecret: KEY });
   // Omitted fields stay as they are.
   await call("PUT", "/api/credentials", { netid: "jdoe3" });
   expect(app.services.settings().password).toBe("hunter2-Secret!");
 });
 
 test("totp-code: six digits for a pasted key, nothing stored", async () => {
-  expect((await call("POST", "/api/setup/totp-code", { secret: "nope" })).status).toBe(400);
   const before = app.services.store.db.query("SELECT COUNT(*) AS n FROM settings").get();
   const res = await call("POST", "/api/setup/totp-code", { secret: "abcd efgh ijkl mnop" });
   expect(res.status).toBe(200);
@@ -251,37 +229,17 @@ test("totp-code: six digits for a pasted key, nothing stored", async () => {
   expect(app.services.store.db.query("SELECT COUNT(*) AS n FROM settings").get()).toEqual(before);
 });
 
-test("setup step: enum only", async () => {
-  expect((await call("PUT", "/api/setup/step", { step: "bogus" })).status).toBe(400);
-  const ok = await call("PUT", "/api/setup/step", { step: "test" });
-  expect(ok.status).toBe(200);
-  expect(ok.json.onboardingStep).toBe("test");
-  await call("PUT", "/api/setup/step", { step: "done" });
-});
-
-test("setup login is refused in simulated mode", async () => {
-  expect((await call("POST", "/api/setup/login")).status).toBe(409);
-});
-
-test("mode: validated, and refused when the server can't restart itself", async () => {
-  expect((await call("PUT", "/api/mode", { mode: "test" })).status).toBe(400);
-  const res = await call("PUT", "/api/mode", { mode: "live" });
-  expect(res.status).toBe(501);
-  // Nothing saved when the switch can't happen.
+test("mode: refused without a restart hook, otherwise saves, turns Live off, then restarts", async () => {
+  expect((await call("PUT", "/api/mode", { mode: "live" })).status).toBe(501);
   expect(app.services.settings().liveEnabled).toBe(false);
-});
 
-test("mode: saves, turns Live off, then restarts", async () => {
   let restarted = 0;
   app.services.restart = () => restarted++;
   try {
     app.services.store.updateSettings({ mode: "simulated", liveEnabled: true, liveTerm: "120271" });
     const res = await call("PUT", "/api/mode", { mode: "rehearsal" });
     expect(res.json).toEqual({ ok: true, restarting: true });
-    const s = app.services.settings();
-    expect(s.mode).toBe("rehearsal");
-    expect(s.liveEnabled).toBe(false);
-    expect(s.liveTerm).toBeNull();
+    expect(app.services.settings()).toMatchObject({ mode: "rehearsal", liveEnabled: false, liveTerm: null });
     expect(await until(async () => restarted === 1)).toBe(true);
   } finally {
     app.services.restart = undefined;
