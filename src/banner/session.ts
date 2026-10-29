@@ -252,6 +252,8 @@ export class BannerSessionManager implements SessionManager {
         clock: this.deps.clock,
         tracker: this.tracker,
         timeoutMs: this.deps.loginTimeoutMs,
+        // LoginDiagnostic explicitly selects safe categories/booleans. Never log a page snapshot.
+        onDiagnostic: diagnostic => console.warn("Login diagnostic", JSON.stringify(diagnostic)),
         onStage: (stage: LoginStage) => {
           this.stage = stage;
           this.deps.events.emit({ kind: "login_stage", severity: "info", title: `Login: ${stage}`, payload: { stage } });

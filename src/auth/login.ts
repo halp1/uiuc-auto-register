@@ -51,6 +51,7 @@ export type LoginStage =
   | "idp_discovery"
   | "netid"
   | "password"
+  | "password_submitted"
   | "mfa_method"
   | "totp_wait"
   | "totp"
@@ -68,6 +69,7 @@ export type LoginReason =
   | "password_empty"
   | "totp_rejected"
   | "field_not_retained"
+  | "field_clear_failed"
   | "focus_failed"
   | "button_not_found"
   | "unsupported_mfa_or_timeout";
@@ -106,8 +108,26 @@ export function fullNetId(netid: string): string {
   return netid.includes("@") ? netid : `${netid}@illinois.edu`;
 }
 
+export interface LoginDiagnostic {
+  reason: "waiting" | "timeout";
+  elapsedMs: number;
+  stage: LoginStage | null;
+  page: "unavailable" | "banner" | "identity_provider" | "microsoft" | "auth" | "known_other" | "unknown";
+  passwordProgress: "not_started" | "waiting_for_sign_in" | "waiting_for_field" | "ready_to_submit" | "submitted";
+  snapshotFailures: number;
+  ready: boolean | null;
+  passwordField: boolean | null;
+  signInReady: boolean | null;
+  passwordError: boolean | null;
+  emptyPassword: boolean | null;
+  codeField: boolean | null;
+  verifyIdentity: boolean | null;
+}
+
 export interface LoginOptions {
   onStage?: (stage: LoginStage) => void;
+  /** Fixed categories and booleans only, never page text, URLs, identifiers, or field values. */
+  onDiagnostic?: (diagnostic: LoginDiagnostic) => void;
   signal?: AbortSignal;
   tracker?: TotpWindowTracker;
   clock?: Clock;
@@ -130,10 +150,40 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
   const clock = opts.clock ?? systemClock;
   const tracker = opts.tracker ?? new TotpWindowTracker();
   const pollMs = opts.pollMs ?? 500;
-  const deadline = clock.now() + (opts.timeoutMs ?? 180_000);
+  const startedAt = clock.now();
+  const deadline = startedAt + (opts.timeoutMs ?? 180_000);
   const unknownHostMs = opts.unknownHostMs ?? 15_000;
   const signal = opts.signal;
   let lastStage: LoginStage | null = null;
+  let passwordProgress: LoginDiagnostic["passwordProgress"] = "not_started";
+  let diagnosticPage: LoginDiagnostic["page"] = "unavailable";
+  let diagnosticSnapshot: PageSnapshot | null = null;
+  let snapshotFailures = 0;
+  let lastDiagnosticAt = startedAt;
+  const diagnose = (reason: LoginDiagnostic["reason"]) => {
+    if (!opts.onDiagnostic || (reason === "waiting" && clock.now() - lastDiagnosticAt < 15_000)) return;
+    lastDiagnosticAt = clock.now();
+    const snap = diagnosticSnapshot;
+    try {
+      opts.onDiagnostic({
+        reason,
+        elapsedMs: Math.max(0, clock.now() - startedAt),
+        stage: lastStage,
+        page: diagnosticPage,
+        passwordProgress,
+        snapshotFailures,
+        ready: snap?.ready ?? null,
+        passwordField: snap?.fields.passwd ?? null,
+        signInReady: snap?.flags.signInReady ?? null,
+        passwordError: snap?.flags.passwordError ?? null,
+        emptyPassword: snap?.flags.emptyPassword ?? null,
+        codeField: snap?.fields.otc ?? null,
+        verifyIdentity: snap?.flags.verifyIdentity ?? null,
+      });
+    } catch {
+      // Diagnostic observers must not change the login flow.
+    }
+  };
   const stage = (s: LoginStage) => {
     if (s === lastStage) return;
     lastStage = s;
@@ -174,7 +224,7 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
     } catch {
       return false;
     }
-    if (clearFirst) await clearField(session, mark);
+    if (clearFirst && !(await clearField(session, mark))) throw new LoginError("field_clear_failed");
     check();
     // The last checks before typing: focus is on the marked field and the page host is allowed.
     if (!hostIn(hosts) || !(await focusCheck(session, mark, hosts))) throw new LoginError("focus_failed");
@@ -224,6 +274,15 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
     const snap: PageSnapshot | null = await snapshot(session);
     check();
     const host = currentHost(session);
+    diagnosticSnapshot = snap && host && snap.host === host && snap.secure ? snap : null;
+    if (!diagnosticSnapshot || !host) diagnosticPage = "unavailable";
+    else if (host === BANNER_HOST) diagnosticPage = "banner";
+    else if (IDP_DISCO_HOSTS.includes(host)) diagnosticPage = "identity_provider";
+    else if (MICROSOFT_HOSTS.includes(host)) diagnosticPage = "microsoft";
+    else if (AUTH_HOSTS.includes(host)) diagnosticPage = "auth";
+    else diagnosticPage = KNOWN_HOSTS.has(host) ? "known_other" : "unknown";
+    if (!snap) snapshotFailures++;
+    diagnose("waiting");
     if (!snap || !host || snap.host !== host || !snap.secure) {
       await sleep(pollMs);
       continue;
@@ -273,15 +332,21 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
 
       if (snap.fields.passwd && !passwordDone) {
         stage("password");
+        passwordProgress = "waiting_for_sign_in";
         // Wait for Microsoft's transition: visible password field plus a "Sign in" submit.
         if (!snap.flags.signInReady || !hostIn(PASSWORD_HOSTS)) {
           await sleep(pollMs);
           continue;
         }
         await sleep(1000);
+        passwordProgress = "waiting_for_field";
         if (await typeInto(PASSWD_SELECTORS, PASSWORD_HOSTS, creds.password, true)) {
+          passwordProgress = "ready_to_submit";
           if (!(await clickAction(SUBMIT_SELECTORS, /^sign in$/i, PASSWORD_HOSTS))) throw new LoginError("button_not_found");
           passwordDone = true;
+          passwordProgress = "submitted";
+          // A click is not proof of acceptance. Never automatically submit the password again.
+          stage("password_submitted");
           await sleep(750);
         }
         continue;
@@ -345,5 +410,6 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
 
     await sleep(pollMs);
   }
+  diagnose("timeout");
   throw new HumanActionRequired("unsupported_mfa_or_timeout");
 }

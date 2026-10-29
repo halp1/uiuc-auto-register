@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { HumanActionRequired, LoginError, login, type Credentials } from "../../src/auth/login";
+import { HumanActionRequired, LoginError, login, type Credentials, type LoginDiagnostic } from "../../src/auth/login";
+import { parseProbe } from "../../src/auth/page";
 import { totp, TotpWindowTracker } from "../../src/auth/totp";
 import { AutoClock, FakeBrowser, illinoisFlow, type FlowOptions, type PageName } from "./fake-browser";
 
@@ -36,6 +37,7 @@ describe("login", () => {
     expect(visited).toEqual(["idp", "netid", "password", "push", "methods", "otc", "kmsi", "banner"]);
     expect(stages).toContain("idp_discovery");
     expect(stages).toContain("password");
+    expect(stages).toContain("password_submitted");
     expect(stages).toContain("totp");
     expect(stages.at(-1)).toBe("ready");
     expect(browser.typed.map(t => [t.host, t.field])).toEqual([
@@ -141,6 +143,146 @@ describe("login", () => {
     const { clock, browser } = setup({ password: "something else" });
     expect(await reason(login(browser, CREDS, { clock }))).toBe("password_rejected");
     expect(passwordTypedOn(browser).length).toBe(1);
+  });
+
+  test("a password form without Sign in never types and diagnoses the readiness wait", async () => {
+    const { clock, browser } = setup({
+      override: {
+        password: () => ({
+          url: "https://login.microsoftonline.com/common/login",
+          fields: { passwd: {} },
+          actions: [{ label: "Continue", kind: "submit", onClick: () => {} }],
+        }),
+      },
+    });
+    const diagnostics: LoginDiagnostic[] = [];
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
+    expect(passwordTypedOn(browser)).toEqual([]);
+    expect(diagnostics.at(-1)).toMatchObject({ reason: "timeout", stage: "password", passwordProgress: "waiting_for_sign_in", signInReady: false });
+    expect(diagnostics.some(d => d.reason === "waiting")).toBe(true);
+  });
+
+  test("a read-only password field is distinguished from a missing Sign in action", async () => {
+    const { clock, browser } = setup({
+      override: {
+        password: () => ({
+          url: "https://login.microsoftonline.com/common/login",
+          fields: { passwd: { readOnly: true } },
+          actions: [{ label: "Sign in", kind: "submit", onClick: () => {} }],
+        }),
+      },
+    });
+    const diagnostics: LoginDiagnostic[] = [];
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
+    expect(passwordTypedOn(browser)).toEqual([]);
+    expect(diagnostics.at(-1)).toMatchObject({ stage: "password", passwordProgress: "waiting_for_field", signInReady: true });
+  });
+
+  test("a click without page progression is reported without resubmitting or leaking page content", async () => {
+    let submissions = 0;
+    const { clock, browser } = setup({
+      override: {
+        password: () => ({
+          url: "https://login.microsoftonline.com/common/login?private=hidden",
+          title: `${CREDS.netid} ${CREDS.password} ${SECRET}`,
+          fields: { passwd: {} },
+          actions: [
+            {
+              label: "Sign in",
+              kind: "submit",
+              onClick: () => {
+                submissions++;
+              },
+            },
+            { label: CREDS.netid, kind: "button", onClick: () => {} },
+          ],
+        }),
+      },
+    });
+    const diagnostics: LoginDiagnostic[] = [];
+    const stages: string[] = [];
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d), onStage: s => stages.push(s) }))).toBe("unsupported_mfa_or_timeout");
+    expect(submissions).toBe(1);
+    expect(passwordTypedOn(browser)).toHaveLength(1);
+    expect(stages.at(-1)).toBe("password_submitted");
+    expect(diagnostics.at(-1)).toMatchObject({ reason: "timeout", page: "microsoft", stage: "password_submitted", passwordProgress: "submitted", passwordField: true });
+    const logged = JSON.stringify(diagnostics);
+    for (const privateValue of [CREDS.netid, CREDS.password, SECRET, "private=hidden", "login.microsoftonline.com"]) {
+      expect(logged).not.toContain(privateValue);
+    }
+  });
+
+  test("a delayed password response advances without a duplicate submission", async () => {
+    let submissions = 0;
+    let waitingSnapshots = 0;
+    const { clock, browser } = setup({
+      override: {
+        password: () => ({
+          url: "https://login.microsoftonline.com/common/login",
+          fields: { passwd: {} },
+          actions: [{
+            label: "Sign in",
+            kind: "submit",
+            onClick: () => {
+              submissions++;
+            },
+          }],
+        }),
+      },
+    });
+    browser.beforeProbe = (b, name) => {
+      if (name === "snapshot" && submissions > 0 && ++waitingSnapshots >= 3) {
+        b.show({ url: "https://banner.apps.uillinois.edu/StudentRegistrationSSB/ssb/term/termSelection", syncToken: true });
+      }
+    };
+    await login(browser, CREDS, { clock });
+    expect(submissions).toBe(1);
+    expect(passwordTypedOn(browser)).toHaveLength(1);
+    expect(waitingSnapshots).toBe(3);
+  });
+
+  test("failed clearing stops before typing a password into existing content", async () => {
+    const { clock, browser } = setup();
+    const evaluate = browser.evaluate.bind(browser);
+    browser.evaluate = async <T>(expr: string): Promise<T> => {
+      if (parseProbe(expr)?.name === "clearField" && browser.page.fields?.passwd) {
+        browser.values.passwd = "existing-content";
+        return false as T;
+      }
+      return evaluate<T>(expr);
+    };
+    expect(await reason(login(browser, CREDS, { clock }))).toBe("field_clear_failed");
+    expect(passwordTypedOn(browser)).toEqual([]);
+    expect(browser.values.passwd).toBe("existing-content");
+  });
+
+  test("persistent snapshot failures are counted without logging raw exceptions", async () => {
+    const { clock, browser } = setup({
+      override: {
+        push: () => ({ url: "https://login.microsoftonline.com/common/SAS/ProcessAuth" }),
+      },
+    });
+    browser.beforeProbe = (b, name) => {
+      if (name === "snapshot" && b.typed.some(t => t.field === "passwd")) throw new Error("private-error-content");
+    };
+    const diagnostics: LoginDiagnostic[] = [];
+    expect(await reason(login(browser, CREDS, { clock, timeoutMs: 20_000, onDiagnostic: d => diagnostics.push(d) }))).toBe("unsupported_mfa_or_timeout");
+    expect(diagnostics.at(-1)).toMatchObject({ reason: "timeout", page: "unavailable", passwordField: null, signInReady: null });
+    expect(diagnostics.at(-1)!.snapshotFailures).toBeGreaterThan(0);
+    expect(JSON.stringify(diagnostics)).not.toContain("private-error-content");
+  });
+
+  test("diagnostic observer failures never replace the login outcome", async () => {
+    const { clock, browser } = setup({
+      override: { push: () => ({ url: "https://login.microsoftonline.com/common/SAS/ProcessAuth" }) },
+    });
+    expect(await reason(login(browser, CREDS, {
+      clock,
+      timeoutMs: 20_000,
+      onDiagnostic: () => {
+        throw new Error("observer failed");
+      },
+    }))).toBe("unsupported_mfa_or_timeout");
   });
 
   test("TOTP is typed only on auth hosts", async () => {
