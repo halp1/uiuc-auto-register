@@ -439,3 +439,44 @@ describe("readTicket", () => {
     expect(t.fetched.length).toBe(0);
   });
 });
+
+describe("Log out during login", () => {
+  test("cancels the login: browser closed, state cold, no error and no backoff", async () => {
+    const store = new Store(":memory:");
+    const events = new Events(store, new Bus());
+    const clock = new FakeClock();
+    // A login page that never moves on, so login would sit in its wait loop until the timeout.
+    const browser = new FakeBrowser(() => ({ url: "https://login.microsoftonline.com/common/login", title: "Sign in" }));
+    browser.cdp = async <T,>(method: string): Promise<T> => (method === "Page.getFrameTree" ? ({ frameTree: { frame: { id: "MAIN" } } } as T) : ({} as T));
+    browser.onCdpEvent = () => () => {};
+    const manager = new BannerSessionManager({
+      config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal", browserBackend: "chrome" },
+      events,
+      store,
+      clock,
+      settings: () => store.getSettings(),
+      browserFactory: async () => browser,
+      credentials: () => CREDS,
+    });
+    const warming = manager.ensureWarm("120271").catch(e => e);
+    for (let i = 0; i < 20 && manager.state() !== "logging_in"; i++) await Promise.resolve();
+    await clock.advance(2000);
+    expect(manager.state()).toBe("logging_in");
+    const loggingOut = manager.goCold("user");
+    await clock.advance(1000);
+    await loggingOut;
+    const error = await warming;
+    expect(String(error?.message ?? error)).toContain("login_cancelled");
+    expect(manager.state()).toBe("cold");
+    expect(manager.status().lastError).toBeNull();
+    expect(browser.closed).toBe(true);
+    expect(store.listEvents().some(e => e.kind === "session_error")).toBe(false);
+    // No backoff: the next login is allowed right away.
+    expect((manager as any).retryAt).toBe(0);
+  });
+
+  test("login gives up after 60 seconds by default", async () => {
+    const { LOGIN_TIMEOUT_MS } = await import("../../src/auth/login");
+    expect(LOGIN_TIMEOUT_MS).toBe(60_000);
+  });
+});

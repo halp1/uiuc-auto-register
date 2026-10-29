@@ -14,7 +14,7 @@ export function ModePill({ status, className }: { status: SystemStatus; classNam
     );
   if (status.mode === "live")
     return (
-      <Badge variant="muted" className={className}>
+      <Badge variant="warning" className={className} title="Seats that open are only dry runs until Live is on">
         <Zap aria-hidden />
         <span className="label">Live off</span>
       </Badge>

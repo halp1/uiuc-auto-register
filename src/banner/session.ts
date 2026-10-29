@@ -119,6 +119,8 @@ export class BannerSessionManager implements SessionManager {
   private lastError: string | null = null;
   private stage: string | null = null;
   private warming: Promise<void> | null = null;
+  /** Aborts the login in progress (Log out while logging in). */
+  private loginAbort: AbortController | null = null;
   private keepaliveTimer: { cancel(): void } | null = null;
   private termEligibility = new Map<string, Eligibility>();
   private activeTerm: string | null = null;
@@ -223,7 +225,23 @@ export class BannerSessionManager implements SessionManager {
     if (this.deps.clock.now() < this.retryAt) throw new BannerSessionError(this.lastError ?? "login_failed");
 
     await this.closeBrowser();
+    const abort = new AbortController();
+    this.loginAbort = abort;
     this.setState("logging_in");
+    try {
+      await this.loginInto(creds, abort.signal);
+    } finally {
+      if (this.loginAbort === abort) this.loginAbort = null;
+    }
+  }
+
+  private async loginInto(creds: Credentials, signal: AbortSignal): Promise<void> {
+    const cancelled = async () => {
+      await this.closeBrowser();
+      this.stage = null;
+      this.setState("cold", "login_cancelled");
+      return new BannerSessionError("login_cancelled");
+    };
     const factory = this.deps.browserFactory ?? (await import("../auth/webview")).webViewFactory;
     let browser: BrowserSession;
     try {
@@ -239,6 +257,7 @@ export class BannerSessionManager implements SessionManager {
       throw this.fail("webkit_unsupported");
     }
     this.browser = browser;
+    if (signal.aborted) throw await cancelled();
     try {
       this.interceptor = await installInterceptor(browser, () => this.authorized, info => {
         this.blockedTotal++;
@@ -263,12 +282,15 @@ export class BannerSessionManager implements SessionManager {
         clock: this.deps.clock,
         tracker: this.tracker,
         timeoutMs: this.deps.loginTimeoutMs,
+        signal,
         onStage: (stage: LoginStage) => {
           this.stage = stage;
           this.deps.events.emit({ kind: "login_stage", severity: "info", title: `Login: ${stage}`, payload: { stage } });
         },
       });
     } catch (error) {
+      // Cancelled by Log out: not a failure, so no backoff and no error state.
+      if (signal.aborted) throw await cancelled();
       await this.closeBrowser();
       const reason = error instanceof LoginError ? error.reason : "login_failed";
       if (error instanceof HumanActionRequired || reason === "password_rejected" || reason === "totp_rejected") {
@@ -280,6 +302,7 @@ export class BannerSessionManager implements SessionManager {
       }
       throw this.fail(reason);
     }
+    if (signal.aborted) throw await cancelled();
     this.failures = 0;
     this.retryAt = 0;
     this.lastError = null;
@@ -410,6 +433,8 @@ export class BannerSessionManager implements SessionManager {
   }
 
   async goCold(reason: string): Promise<void> {
+    // Log out during a login cancels it instead of waiting for it to finish.
+    this.loginAbort?.abort();
     if (this.warming) await this.warming.catch(() => {});
     // An explicit cold start also clears login backoff and human-action blocks.
     this.humanBlocked = false;

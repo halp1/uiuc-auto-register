@@ -135,6 +135,8 @@ const OTHER_WAY = /use another way|use a different verification option|sign in a
 // Match known app-code choices, not actions offering to text/email/call with a code.
 const CODE_OPTION = /^(?:(?:use|enter) (?:a |the )?verification code|(?:use |enter )?(?:a |the )?(?:verification )?code from (?:my |your |an? )?(?:microsoft )?(?:authenticator(?: app)?|mobile app))$/i;
 const PASSKEY_FALLBACK_TIMEOUT_MS = 15_000;
+/** A login that has not reached Banner in this long gives up (a TOTP window wait is at most about 30 s). */
+export const LOGIN_TIMEOUT_MS = 60_000;
 
 /** Log in and resolve when the Banner page with a synchronizer token is showing. */
 export async function login(session: BrowserSession, creds: Credentials | null, opts: LoginOptions = {}): Promise<void> {
@@ -143,7 +145,7 @@ export async function login(session: BrowserSession, creds: Credentials | null, 
   const clock = opts.clock ?? systemClock;
   const tracker = opts.tracker ?? new TotpWindowTracker();
   const pollMs = opts.pollMs ?? 500;
-  const deadline = clock.now() + (opts.timeoutMs ?? 180_000);
+  const deadline = clock.now() + (opts.timeoutMs ?? LOGIN_TIMEOUT_MS);
   const unknownHostMs = opts.unknownHostMs ?? 15_000;
   const signal = opts.signal;
   let lastStage: LoginStage | null = null;

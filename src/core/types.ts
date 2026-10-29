@@ -242,7 +242,26 @@ export interface SystemStatus {
   };
   ticket: { at: string | null; phase: "none" | "waiting" | "prewarm" | "firing" | "done" };
   catalog: { term: string | null; syncedAt: number | null; courses: number; syncing: boolean };
+  progress: ScheduleProgress | null; // active term only
   startedAt: number;
+}
+
+/**
+ * How close the active term is to the schedule the user wants. The goal is the targeted plan when there is
+ * one, otherwise every armed course on the watchlist. Credits are catalog credit hours (lowest value of a range).
+ */
+export interface ScheduleProgress {
+  term: string;
+  source: "plan" | "watchlist";
+  planId: number | null;
+  planName: string | null;
+  courses: { subject: string; number: string; credits: number | null; variable: boolean; state: "registered" | "watching" | "unarmed" | "blocked" }[];
+  registeredCourses: number;
+  totalCourses: number;
+  registeredCredits: number;
+  totalCredits: number;
+  creditsKnown: boolean; // false when some course has no credit hours in the catalog
+  scheduleCheckedAt: number | null; // last time Banner's schedule was read for this term
 }
 
 // Catalog / search

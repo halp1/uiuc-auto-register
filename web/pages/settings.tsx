@@ -1,4 +1,4 @@
-import { Bell, CircleCheck, CircleX, LogIn, LogOut, RefreshCw, Send, TriangleAlert, Zap } from "lucide-react";
+import { Bell, CircleCheck, CircleX, LogIn, LogOut, RefreshCw, Send, TriangleAlert, X, Zap } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RehearsalReport } from "../../src/core/contracts";
 import { NOTIFY_EVENTS, type NotifyEvent, type PublicSettings, type Route, type SettingsPatch } from "../../src/core/types";
@@ -1128,10 +1128,17 @@ function SessionCard() {
               Log in
             </Button>
           )}
-          <Button size="sm" variant="destructive" onClick={() => setConfirmLogout(true)} disabled={session.state === "cold"}>
-            <LogOut aria-hidden />
-            Log out
-          </Button>
+          {session.state === "logging_in" ? (
+            <Button size="sm" variant="secondary" onClick={() => action.run("cancel", api.logout)} loading={action.busy === "cancel"}>
+              {action.busy !== "cancel" && <X aria-hidden />}
+              Cancel
+            </Button>
+          ) : (
+            <Button size="sm" variant="destructive" onClick={() => setConfirmLogout(true)} disabled={session.state !== "warm"}>
+              <LogOut aria-hidden />
+              Log out
+            </Button>
+          )}
         </div>
       </CardFooter>
       <ConfirmDialog

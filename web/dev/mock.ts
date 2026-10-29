@@ -364,6 +364,27 @@ let status: SystemStatus = {
   },
   ticket: { at: settings.ticketAt, phase: "waiting" },
   catalog: { term: TERM, syncedAt: now - 5 * 3600_000, courses: 4211, syncing: false },
+  progress:
+    scenario === "empty"
+      ? null
+      : {
+          term: TERM,
+          source: "plan",
+          planId: 1,
+          planName: "Plan 1",
+          courses: [
+            { subject: "CS", number: "225", credits: 4, variable: false, state: "watching" },
+            { subject: "CS", number: "173", credits: 3, variable: false, state: "registered" },
+            { subject: "MATH", number: "241", credits: 4, variable: false, state: "unarmed" },
+            { subject: "STAT", number: "400", credits: 3, variable: false, state: "registered" },
+          ],
+          registeredCourses: 2,
+          totalCourses: 4,
+          registeredCredits: 6,
+          totalCredits: 14,
+          creditsKnown: true,
+          scheduleCheckedAt: mode === "simulated" ? null : now - 12 * min,
+        },
   startedAt: now - 3 * 3600_000,
 };
 
@@ -477,6 +498,8 @@ function detail(subject: string, number: string): CourseDetail | null {
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 class MockError extends Error {}
+
+let loginTimer: ReturnType<typeof setTimeout> | null = null;
 
 function findWanted(id: number) {
   const w = wanted.find(x => x.id === id);
@@ -613,13 +636,18 @@ export async function mockRequest(method: string, path: string, body: any): Prom
   if (key === "POST /api/session/login") {
     status = { ...status, session: { ...status.session, state: "logging_in", stage: "Duo TOTP", lastError: null, loggedOut: false } };
     push({ type: "status", status: clone(status) });
-    setTimeout(() => {
+    if (loginTimer) clearTimeout(loginTimer);
+    loginTimer = setTimeout(() => {
+      loginTimer = null;
       status = { ...status, session: { ...status.session, state: "warm", since: Date.now(), stage: null } };
       push({ type: "status", status: clone(status) });
     }, 2000);
     return { ok: true };
   }
   if (key === "POST /api/session/logout") {
+    // Also cancels a login in progress.
+    if (loginTimer) clearTimeout(loginTimer);
+    loginTimer = null;
     status = { ...status, session: { ...status.session, state: "cold", since: Date.now(), loggedOut: true } };
     settings = { ...settings, sessionLoggedOut: true };
     push({ type: "settings", settings: clone(settings) });

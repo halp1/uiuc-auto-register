@@ -289,6 +289,7 @@ export type SessionReason =
   | "request_failed"
   | "not_warm"
   | "disposed"
+  | "login_cancelled"
   | string;
 
 export class BannerSessionError extends Error {

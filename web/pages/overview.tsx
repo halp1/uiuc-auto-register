@@ -12,9 +12,10 @@ import {
   Plus,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { useMemo, useRef, useState, type DragEvent } from "react";
-import type { Approval, PublicSettings, SystemStatus, WantedCourse } from "../../src/core/types";
+import type { Approval, ScheduleProgress, WantedCourse } from "../../src/core/types";
 import { ConfirmDialog } from "@/components/confirm";
 import { BundleChip, CourseState, EventRow, SeatCount } from "@/components/data";
 import { Button } from "@/components/ui/button";
@@ -52,22 +53,77 @@ const sessionMeta: Record<string, { tone: Tone; label: string }> = {
   error: { tone: "error", label: "Error" },
 };
 
-/** What actually happens when a watched seat opens, in plain words. */
-function seatOutcome(
-  status: SystemStatus,
-  settings: PublicSettings | null,
-): { label: string; tone: Tone; note?: string; href?: string } {
-  if (status.globalPaused) return { label: "Nothing, paused", tone: "off" };
-  if (status.mode === "simulated") return { label: "Simulated register", tone: "neutral" };
-  if (status.mode === "rehearsal") return { label: "Dry run", tone: "neutral", note: "Test mode" };
-  if (!status.liveEnabled) return { label: "Dry run", tone: "warning", note: "Live is off", href: "/settings#registration" };
-  if (settings?.approvalMode === "approve")
-    return {
-      label: "Asks you first",
-      tone: "violet",
-      note: settings.approvalAutoAfterMin != null ? `then registers after ${settings.approvalAutoAfterMin} min` : undefined,
-    };
-  return { label: "Registers", tone: "accent" };
+const progressSegment: Record<ScheduleProgress["courses"][number]["state"], { className: string; label: string }> = {
+  registered: { className: "bg-ready", label: "Registered" },
+  watching: { className: "bg-accent", label: "Watching" },
+  blocked: { className: "bg-error", label: "Blocked" },
+  unarmed: { className: "bg-[#3a3a3a]", label: "Not armed" },
+};
+
+function ProgressCell({ progress, simulated }: { progress: ScheduleProgress | null; simulated: boolean }) {
+  if (!progress || progress.totalCourses === 0)
+    return (
+      <a
+        href={hrefWithMock("/plan")}
+        onClick={linkClick("/plan")}
+        className="text-fg-muted underline decoration-border-hover underline-offset-2 transition-colors duration-150 hover:text-fg"
+      >
+        No courses yet
+      </a>
+    );
+  const plus = progress.creditsKnown ? "" : "+";
+  const done = progress.registeredCourses === progress.totalCourses;
+  const planHref = progress.planId != null ? `/plan?id=${progress.planId}` : "/plan";
+  const unread = progress.scheduleCheckedAt == null && !simulated;
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-1.5">
+      <p className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 tabular-nums">
+        {done ? (
+          <span className="text-ready">All {progress.totalCourses} registered</span>
+        ) : (
+          <span className="text-fg-muted">
+            <span className="text-fg">{progress.registeredCourses}</span> of {progress.totalCourses} courses
+          </span>
+        )}
+        {progress.totalCredits > 0 && (
+          <span className="text-xs text-fg-muted">
+            {progress.registeredCredits} of {progress.totalCredits}
+            {plus} credits
+          </span>
+        )}
+      </p>
+      <div
+        role="img"
+        aria-label={`${progress.registeredCourses} of ${progress.totalCourses} courses registered`}
+        className="flex h-1.5 w-full gap-0.5"
+      >
+        {progress.courses.map(c => {
+          const seg = progressSegment[c.state];
+          return (
+            <span
+              key={`${c.subject}${c.number}`}
+              title={`${c.subject} ${c.number} ${seg.label}`}
+              className={cn("h-full min-w-1 flex-1 rounded-[2px] transition-colors duration-200", seg.className)}
+            />
+          );
+        })}
+      </div>
+      {unread ? (
+        <span className="truncate text-xs text-fg-muted">Schedule not read yet</span>
+      ) : (
+        progress.source === "plan" &&
+        progress.planName && (
+          <a
+            href={hrefWithMock(planHref)}
+            onClick={linkClick(planHref)}
+            className="truncate text-xs text-fg-muted underline decoration-border-hover underline-offset-2 transition-colors duration-150 hover:text-fg"
+          >
+            {progress.planName}
+          </a>
+        )
+      )}
+    </div>
+  );
 }
 
 function Cell({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
@@ -103,7 +159,6 @@ function StatusRow({ now }: { now: number }) {
   const simulated = status.mode === "simulated";
   const ticketAt = status.ticket.at ? new Date(status.ticket.at).getTime() : null;
   const loggedOut = status.session.loggedOut && status.session.state === "cold";
-  const outcome = seatOutcome(status, settings);
 
   return (
     <div className="flex flex-col gap-2">
@@ -132,6 +187,11 @@ function StatusRow({ now }: { now: number }) {
             <Button size="xs" onClick={() => run("login", api.login)} loading={busy === "login"}>
               {busy !== "login" && <LogIn aria-hidden />}
               Log in
+            </Button>
+          ) : status.session.state === "logging_in" ? (
+            <Button size="xs" variant="ghost" onClick={() => run("logout", api.logout)} loading={busy === "logout"}>
+              {busy !== "logout" && <X aria-hidden />}
+              Cancel
             </Button>
           ) : (
             <Button size="xs" variant="ghost" onClick={() => run("logout", api.logout)} loading={busy === "logout"}>
@@ -163,20 +223,8 @@ function StatusRow({ now }: { now: number }) {
             </a>
           )}
         </Cell>
-        <Cell label="When a seat opens">
-          <Status tone={outcome.tone}>{outcome.label}</Status>
-          {outcome.note &&
-            (outcome.href ? (
-              <a
-                href={hrefWithMock(outcome.href)}
-                onClick={linkClick(outcome.href)}
-                className="text-xs text-fg-muted underline decoration-border-hover underline-offset-2 transition-colors duration-150 hover:text-fg"
-              >
-                {outcome.note}
-              </a>
-            ) : (
-              <span className="text-xs text-fg-muted">{outcome.note}</span>
-            ))}
+        <Cell label="Progress">
+          <ProgressCell progress={status.progress} simulated={simulated} />
         </Cell>
       </div>
       <InlineError>{error}</InlineError>

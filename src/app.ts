@@ -18,6 +18,7 @@ import { isTermCode } from "./core/terms";
 import type { Settings, SystemStatus } from "./core/types";
 import { Orchestrator } from "./engine/orchestrator";
 import { PlanService } from "./engine/plans";
+import { scheduleProgress } from "./engine/progress";
 import { Poller } from "./engine/poller";
 import { TicketScheduler } from "./engine/ticket";
 import { TicketDetector } from "./engine/ticket-detect";
@@ -135,6 +136,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
         : { state: "cold", since: null, lastKeepaliveAt: null, loggedOut: s.sessionLoggedOut, lastError: null, stage: null },
       ticket: ticket.status(),
       catalog: catalog.status(s.activeTerm),
+      progress: s.activeTerm ? scheduleProgress(store, s.activeTerm) : null,
       startedAt,
     };
   };
@@ -149,7 +151,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
   };
   // Event-driven status, plus a slow tick for timers (countdowns, poller cycle times).
   bus.subscribe(message => {
-    if (message.type === "event" || message.type === "seats") queueMicrotask(publishStatus);
+    if (message.type === "event" || message.type === "seats" || message.type === "wanted" || message.type === "plans") queueMicrotask(publishStatus);
   });
 
   const publishWanted = () => {
