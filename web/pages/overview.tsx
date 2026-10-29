@@ -164,7 +164,7 @@ function StatusRow({ now }: { now: number }) {
     <div className="flex flex-col gap-2">
       <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-border bg-surface lg:grid-cols-4 [&>*]:border-border max-lg:[&>*:nth-child(odd)]:border-r max-lg:[&>*:nth-child(-n+2)]:border-b lg:[&>*+*]:border-l">
         <Cell label="Poller">
-          <Status tone={poller.tone} pulse={poller.label === "Running"}>
+          <Status tone={poller.tone}>
             {poller.label}
           </Status>
           <span className="text-xs text-fg-subtle tabular-nums">{relative(status.poller.lastCycleAt, now)}</span>
