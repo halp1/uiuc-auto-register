@@ -23,11 +23,11 @@ export function RecoveryCodes({
   const text = codes.join("\n");
 
   function download() {
-    const blob = new Blob([`Auto Register recovery codes\nEach code works once.\n\n${text}\n`], { type: "text/plain" });
+    const blob = new Blob([`YUAR recovery codes\nEach code works once.\n\n${text}\n`], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "auto-register-recovery-codes.txt";
+    a.download = "yuar-recovery-codes.txt";
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }

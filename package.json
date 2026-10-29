@@ -1,5 +1,6 @@
 {
-  "name": "uiuc-auto-register",
+  "name": "yuar",
+  "description": "Your UIUC Automatic Registration",
   "type": "module",
   "private": true,
   "scripts": {

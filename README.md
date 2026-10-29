@@ -1,4 +1,6 @@
-# UIUC Auto Register
+# YUAR
+
+Your UIUC Automatic Registration.
 
 Watches the course sections you want and registers you the moment a seat opens.
 

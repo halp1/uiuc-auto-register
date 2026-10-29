@@ -207,7 +207,7 @@ export function SignInPage() {
       <main className="flex w-full max-w-[360px] flex-col gap-8">
         <div className="flex flex-col items-center gap-4 text-center">
           <AppMark className="size-9" />
-          <h1 className="text-xl font-semibold tracking-[-0.02em]">{recovering ? "Reset your password" : "Sign in to Auto Register"}</h1>
+          <h1 className="text-xl font-semibold tracking-[-0.02em]">{recovering ? "Reset your password" : "Sign in to YUAR"}</h1>
         </div>
         <div className="rounded-xl border border-border bg-surface p-6">
           {recovering ? <RecoverForm onBack={() => setRecovering(false)} /> : <PasswordForm onRecover={() => setRecovering(true)} />}

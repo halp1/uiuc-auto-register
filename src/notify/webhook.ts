@@ -37,7 +37,7 @@ export function webhookBody(message: OutMessage) {
   const embed: Record<string, unknown> = { title: message.title.slice(0, 256), color: SEVERITY_COLORS[message.severity] };
   if (message.body) embed.description = message.body.slice(0, 4000);
   // No mentions can ever be triggered by course titles or Banner messages.
-  return { username: "UIUC Auto Register", embeds: [embed], allowed_mentions: { parse: [] } };
+  return { username: "YUAR", embeds: [embed], allowed_mentions: { parse: [] } };
 }
 
 export class WebhookChannel implements WebhookSender {

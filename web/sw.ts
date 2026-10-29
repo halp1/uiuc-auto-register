@@ -54,7 +54,7 @@ self.addEventListener("push", event => {
   };
   if (hasActions) options.actions = data.actions!.slice(0, 2);
   if (data.renotify && data.tag) options.renotify = true;
-  event.waitUntil(self.registration.showNotification(data.title || "UIUC Auto Register", options));
+  event.waitUntil(self.registration.showNotification(data.title || "YUAR", options));
 });
 
 async function openApp(url: string): Promise<void> {

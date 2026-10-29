@@ -34,7 +34,7 @@ export const PUBLIC_API = new Set([
 ]);
 
 const CHALLENGE_TTL_MS = 5 * 60_000;
-const RP_NAME = "UIUC Auto Register";
+const RP_NAME = "YUAR";
 
 export function readCookie(req: Request, name: string): string | null {
   const header = req.headers.get("cookie");
@@ -320,7 +320,7 @@ export function authRoutes(access: AccessControl, events: Events) {
           rpName: RP_NAME,
           rpID: rpId,
           userName: "you",
-          userDisplayName: "UIUC Auto Register",
+          userDisplayName: "YUAR",
           userID: access.userHandle() as Uint8Array<ArrayBuffer>,
           attestationType: "none",
           excludeCredentials: access.passkeys(rpId).map(p => ({ id: p.id, transports: p.transports as any })),

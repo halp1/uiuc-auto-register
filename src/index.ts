@@ -74,7 +74,7 @@ const server = Bun.serve({
 g.__autoRegister = { app: first.app, server };
 await first.app.start();
 
-console.log(`UIUC Auto Register running at http://${loopback ? cli.host : "localhost"}:${server.port}`);
+console.log(`YUAR running at http://${loopback ? cli.host : "localhost"}:${server.port}`);
 console.log(`Mode: ${modeLine[first.app.services.config.mode]}`);
 
 /** Stop the app (Banner session, poller, orchestrator) and boot it again in the saved mode. One at a time. */

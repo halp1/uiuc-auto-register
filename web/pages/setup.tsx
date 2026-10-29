@@ -66,7 +66,7 @@ export function SetupPage({ step }: { step: OnboardingStep }) {
     <div className="min-h-dvh bg-background">
       <header className="flex h-14 items-center gap-2.5 border-b border-border px-4 sm:px-6">
         <AppMark />
-        <span className="text-sm font-semibold">Auto Register</span>
+        <span className="text-sm font-semibold">YUAR</span>
         <span className="ml-auto text-xs text-fg-muted tabular-nums">
           Step {index + 1} of {STEPS.length}
         </span>

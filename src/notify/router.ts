@@ -198,7 +198,7 @@ export class NotificationRouter implements Notifier {
   async test(channel: "discord" | "push" | "webhook"): Promise<{ ok: boolean; detail: string }> {
     const message: OutMessage = {
       title: "Test notification",
-      body: "Notifications from UIUC Auto Register reach you here.",
+      body: "Notifications from YUAR reach you here.",
       severity: "info",
       tag: "test",
     };
