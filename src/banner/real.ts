@@ -38,6 +38,7 @@ export function createRealBanner(deps: RealBannerDeps): RealBanner {
     if (s.globalPaused || !s.activeTerm) return null;
     // After Log out the app only logs in when it has to (registering, the time ticket), not to keep warm.
     if (s.sessionLoggedOut) return null;
+    if (!s.netid || !s.password || !s.totpSecret) return null;
     return store.armedCrns(s.activeTerm).length > 0 ? s.activeTerm : null;
   };
 

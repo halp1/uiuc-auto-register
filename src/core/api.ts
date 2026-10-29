@@ -5,12 +5,15 @@ import type {
   AnyFilters,
   AppEvent,
   CourseDetail,
+  Mode,
+  OnboardingStep,
   Plan,
   PlanCourse,
   PlanGenerateResult,
   PlanPick,
   PublicSettings,
   SearchHit,
+  SetupLoginResult,
   SettingsPatch,
   Snapshot,
   Term,
@@ -74,6 +77,17 @@ export interface Api {
   "POST /api/notify/test/:channel": { res: { ok: boolean; detail: string } }; // channel = discord | push | webhook
   // PUT /api/settings accepts discordWebhookUrl: string sets (https://discord.com/api/webhooks/<id>/<token> only), null removes
   "GET /api/push/vapid": { res: { publicKey: string } };
+
+  // account and setup
+  // Values are never echoed. netid "abc2@illinois.edu" is stored as "abc2". Omitted fields stay as they are.
+  "PUT /api/credentials": { body: { netid?: string; password?: string; totpSecret?: string }; res: PublicSettings };
+  // Current 6-digit code for a pasted key, for the Microsoft "enter the code" step. Nothing is stored.
+  "POST /api/setup/totp-code": { body: { secret: string }; res: { code: string; secondsLeft: number } };
+  // Log in to Banner with the saved credentials and wait for the result. Stages stream as status.session.stage.
+  "POST /api/setup/login": { res: SetupLoginResult };
+  "PUT /api/setup/step": { body: { step: OnboardingStep }; res: PublicSettings };
+  // Saves the mode, turns Live off, then restarts the Banner side. status.restarting is true until it is back.
+  "PUT /api/mode": { body: { mode: Mode }; res: { ok: true; restarting: boolean } };
   "POST /api/push/subscribe": { body: PushSubscriptionJSON; res: { ok: true } };
   "POST /api/push/unsubscribe": { body: { endpoint: string }; res: { ok: true } };
 

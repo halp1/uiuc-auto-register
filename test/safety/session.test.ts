@@ -4,7 +4,7 @@ import { createRealBanner } from "../../src/banner/real";
 import { parseScheduleJson, parseSubmitBatch, parseTermSearch } from "../../src/banner/registrar/types";
 import { Bus } from "../../src/core/bus";
 import { FakeClock } from "../../src/core/clock";
-import { loadConfig, type Config } from "../../src/core/config";
+import { makeConfig, type Config } from "../../src/core/config";
 import { Store } from "../../src/core/db";
 import { Events } from "../../src/core/events";
 import type { BrowserFactory } from "../../src/auth/browser";
@@ -15,7 +15,7 @@ const CREDS = { netid: "student7", password: "pw", totpSecret: "GEZDGNBVGY3TQOJQ
 function setup(over: Partial<Config> = {}, creds: typeof CREDS | null = null) {
   const store = new Store(":memory:");
   const events = new Events(store, new Bus());
-  const config: Config = { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal", ...over };
+  const config: Config = { ...makeConfig("rehearsal", { chromePath: null }), ...over };
   let launches = 0;
   const browserFactory: BrowserFactory = async opts => {
     launches++;
@@ -26,6 +26,27 @@ function setup(over: Partial<Config> = {}, creds: typeof CREDS | null = null) {
 }
 
 describe("BannerSessionManager", () => {
+  test("the saved login is used when no credentials override is given", async () => {
+    const store = new Store(":memory:");
+    store.updateSettings({ netid: "student7", password: "pw", totpSecret: "not base32!" });
+    let launches = 0;
+    const manager = new BannerSessionManager({
+      config: makeConfig("rehearsal", { chromePath: null }),
+      events: new Events(store, new Bus()),
+      store,
+      clock: new FakeClock(),
+      settings: () => store.getSettings(),
+      browserFactory: async opts => (launches++, new FakeBrowser(() => ({ url: "about:blank" }), opts.backend)),
+    });
+    // The saved key is read (and rejected) before any browser opens.
+    await expect(manager.login()).rejects.toThrow("invalid_totp_secret");
+    expect(launches).toBe(0);
+    store.updateSettings({ password: null });
+    await manager.goCold("credentials_changed");
+    await expect(manager.login()).rejects.toThrow("missing_credentials");
+    expect(launches).toBe(0);
+  });
+
   test("missing credentials: error state, reason code, no browser", async () => {
     const s = setup();
     await expect(s.manager.ensureWarm("120271")).rejects.toThrow("missing_credentials");
@@ -37,19 +58,11 @@ describe("BannerSessionManager", () => {
     expect(critical?.detail).toBe("missing_credentials");
   });
 
-  test("the webkit backend is refused for rehearsal and live", async () => {
-    for (const mode of ["rehearsal", "live"] as const) {
-      const s = setup({ mode, browserBackend: "webkit" }, CREDS);
-      await expect(s.manager.ensureWarm("120271")).rejects.toThrow("webkit_unsupported");
-      expect(s.launches()).toBe(0);
-    }
-  });
-
   test("a factory that hands back a webkit view is closed and refused", async () => {
     const store = new Store(":memory:");
     const fake = new FakeBrowser(() => ({ url: "about:blank" }), "webkit");
     const manager = new BannerSessionManager({
-      config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" },
+      config: makeConfig("rehearsal", { chromePath: null }),
       events: new Events(store, new Bus()),
       store,
       clock: new FakeClock(),
@@ -67,7 +80,7 @@ describe("BannerSessionManager", () => {
     const log = spyOn(console, "error").mockImplementation(() => {});
     try {
       const manager = new BannerSessionManager({
-        config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" },
+        config: makeConfig("rehearsal", { chromePath: null }),
         events: new Events(store, new Bus()),
         store,
         clock: new FakeClock(),
@@ -135,7 +148,7 @@ describe("readScheduleDetailed", () => {
       if (url.includes("getRegistrationEvents")) return opts.calendar ? reply(opts.calendar.status, opts.calendar.body) : reply(500, "<html>error</html>");
       return reply(404, "");
     };
-    const manager = new BannerSessionManager({ config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" }, events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
+    const manager = new BannerSessionManager({ config: makeConfig("rehearsal", { chromePath: null }), events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
     // Pretend a login already happened.
     Object.assign(manager as any, { browser, current: "warm" });
     return { manager, store, fetched };
@@ -243,7 +256,7 @@ describe("test (rehearse) before registration opens", () => {
       if (String(a.url).includes("getRegistrationEvents")) return reply(500, "");
       return reply(404, "");
     };
-    const manager = new BannerSessionManager({ config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" }, events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
+    const manager = new BannerSessionManager({ config: makeConfig("rehearsal", { chromePath: null }), events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
     Object.assign(manager as any, { browser, current: "warm" });
     return { manager, store };
   }
@@ -290,12 +303,12 @@ describe("createRealBanner", () => {
     const store = new Store(":memory:");
     const bus = new Bus();
     const base = { store, bus, events: new Events(store, bus), clock: new FakeClock(), settings: () => store.getSettings() };
-    expect(() => createRealBanner({ ...base, config: { ...loadConfig({ NODE_ENV: "test" }), mode: "simulated" } })).toThrow();
-    const live = createRealBanner({ ...base, config: { ...loadConfig({ NODE_ENV: "test" }), mode: "live" } });
+    expect(() => createRealBanner({ ...base, config: makeConfig("simulated", { chromePath: null }) })).toThrow();
+    const live = createRealBanner({ ...base, config: makeConfig("live", { chromePath: null }) });
     expect(live.registrar().kind).toBe("rehearsal");
     store.updateSettings({ liveEnabled: true, liveTerm: "120271" });
     expect(live.registrar().kind).toBe("live");
-    const rehearsal = createRealBanner({ ...base, config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal" } });
+    const rehearsal = createRealBanner({ ...base, config: makeConfig("rehearsal", { chromePath: null }) });
     expect(rehearsal.registrar().kind).toBe("rehearsal");
     expect(rehearsal.postSubmitCheck).toBeUndefined();
   });
@@ -303,7 +316,7 @@ describe("createRealBanner", () => {
   test("one LiveRegistrar per liveTerm, rebuilt when the term changes", () => {
     const store = new Store(":memory:");
     const bus = new Bus();
-    const real = createRealBanner({ store, bus, events: new Events(store, bus), clock: new FakeClock(), settings: () => store.getSettings(), config: { ...loadConfig({ NODE_ENV: "test" }), mode: "live" } });
+    const real = createRealBanner({ store, bus, events: new Events(store, bus), clock: new FakeClock(), settings: () => store.getSettings(), config: makeConfig("live", { chromePath: null }) });
     store.updateSettings({ liveEnabled: true, liveTerm: "120271" });
     const first = real.registrar();
     expect(real.registrar()).toBe(first);
@@ -392,7 +405,7 @@ describe("readTicket", () => {
       if (String(a.url).includes("getRegistrationEvents")) return reply(200, "[]");
       return reply(404, "");
     };
-    const manager = new BannerSessionManager({ config: { ...loadConfig({ NODE_ENV: "test" }), mode: "live" }, events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
+    const manager = new BannerSessionManager({ config: makeConfig("live", { chromePath: null }), events, store, clock: new FakeClock(), settings: () => store.getSettings(), credentials: () => null });
     Object.assign(manager as any, { browser, current: "warm" });
     return { manager, browser, fetched, store };
   }
@@ -450,7 +463,7 @@ describe("Log out during login", () => {
     browser.cdp = async <T,>(method: string): Promise<T> => (method === "Page.getFrameTree" ? ({ frameTree: { frame: { id: "MAIN" } } } as T) : ({} as T));
     browser.onCdpEvent = () => () => {};
     const manager = new BannerSessionManager({
-      config: { ...loadConfig({ NODE_ENV: "test" }), mode: "rehearsal", browserBackend: "chrome" },
+      config: makeConfig("rehearsal", { chromePath: null }),
       events,
       store,
       clock,

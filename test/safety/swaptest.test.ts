@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { FakeClock } from "../../src/core/clock";
-import { loadConfig, type Config } from "../../src/core/config";
+import { makeConfig, type Config } from "../../src/core/config";
 import { Store } from "../../src/core/db";
 import { runSwapTest, swapTestGate, SwapTestRefused } from "../../src/engine/swaptest";
 import type { BannerWriteApi } from "../../src/banner/registrar/types";
 
-const cfg = (mode: Config["mode"]): Config => ({ ...loadConfig({ NODE_ENV: "test" }), mode });
+const cfg = (mode: Config["mode"]): Config => (makeConfig(mode, { chromePath: null }));
 
 function trapApi(): { api: BannerWriteApi; calls: string[] } {
   const calls: string[] = [];

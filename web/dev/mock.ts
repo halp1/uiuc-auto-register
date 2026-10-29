@@ -305,7 +305,18 @@ let approvals: Approval[] = [
   },
 ];
 
+const params = new URLSearchParams(location.search);
+const mode = (params.get("mode") as SystemStatus["mode"]) ?? "live";
+const scenario = params.get("scenario");
+/** ?setup=1 starts a fresh install at the first setup step with nothing saved. */
+const fresh = params.get("setup") === "1";
+
 let settings: PublicSettings = {
+  mode,
+  netid: fresh ? null : "jdoe2",
+  passwordSet: !fresh,
+  totpSet: !fresh,
+  onboardingStep: fresh ? "account" : "done",
   approvalMode: "approve",
   approvalAutoAfterMin: 10,
   pollIntervalSec: 10,
@@ -331,12 +342,18 @@ let settings: PublicSettings = {
   vapidPublicKey: null,
 };
 
-const mode = (new URLSearchParams(location.search).get("mode") as SystemStatus["mode"]) ?? "simulated";
-const scenario = new URLSearchParams(location.search).get("scenario");
+
+if (fresh) {
+  settings.discordTokenHint = null;
+  settings.discordUserId = null;
+  settings.discordWebhookHint = null;
+  for (const e of NOTIFY_EVENTS) settings.routing[e] = { discord: false, push: false, webhook: false };
+}
 
 let status: SystemStatus = {
   mode,
-  backend: "webkit",
+  restarting: false,
+  hotReload: params.get("hot") === "1",
   globalPaused: false,
   liveEnabled: false,
   liveTerm: null,
@@ -365,7 +382,7 @@ let status: SystemStatus = {
   ticket: { at: settings.ticketAt, phase: "waiting" },
   catalog: { term: TERM, syncedAt: now - 5 * 3600_000, courses: 4211, syncing: false },
   progress:
-    scenario === "empty"
+    scenario === "empty" || fresh
       ? null
       : {
           term: TERM,
@@ -429,11 +446,12 @@ const terms = [
   { code: "120268", description: "Fall 2026" },
 ];
 
-if (scenario === "empty") {
+if (scenario === "empty" || fresh) {
   wanted = [];
   approvals = [];
   events = events.slice(-3);
 }
+if (fresh) status.session = { ...status.session, state: "cold", since: null, lastKeepaliveAt: null };
 if (scenario === "session") {
   status.session = { ...status.session, state: "error", lastError: "TOTP code rejected. Check UIUC_TOTP_SECRET." };
 }
@@ -682,7 +700,8 @@ export async function mockRequest(method: string, path: string, body: any): Prom
     return r;
   }
   if (key === "POST /api/live") {
-    if (status.mode !== "live") throw new MockError("Live mode needs REGISTRATION_MODE=live in the environment.");
+    if (status.mode !== "live") throw new MockError("Switch the mode to Live first.");
+    if (status.hotReload) throw new MockError("Live can't be turned on while running with bun dev. Use bun start.");
     if (body.enabled && body.confirmText !== "Spring 2027") throw new MockError("Type the term exactly as shown.");
     settings = { ...settings, liveEnabled: body.enabled, liveTerm: body.enabled ? TERM : null };
     status = { ...status, liveEnabled: body.enabled, liveTerm: settings.liveTerm };
@@ -711,6 +730,72 @@ export async function mockRequest(method: string, path: string, body: any): Prom
       push({ type: "status", status: clone(status) });
     }
     return { term: body.term, found: true, ticketAt, windows: [{ start: ticketAt, end: null }], applied, checkedAt };
+  }
+  if (key === "PUT /api/credentials") {
+    if (body.totpSecret !== undefined && !/^[A-Z2-7 ]{16,}$/i.test(String(body.totpSecret).trim()))
+      throw new MockError("That key doesn't look right. Copy the secret key from the Microsoft page again.");
+    if (body.netid !== undefined && !/^[a-z][a-z0-9]{1,15}$/i.test(String(body.netid).trim()))
+      throw new MockError("Enter your NetID without @illinois.edu.");
+    settings = {
+      ...settings,
+      ...(body.netid !== undefined ? { netid: String(body.netid).trim().toLowerCase() } : {}),
+      ...(body.password ? { passwordSet: true } : {}),
+      ...(body.totpSecret ? { totpSet: true } : {}),
+    };
+    push({ type: "settings", settings: clone(settings) });
+    return clone(settings);
+  }
+  if (key === "POST /api/setup/totp-code") {
+    const secret = String(body.secret ?? "").replace(/\s+/g, "").toUpperCase();
+    if (!/^[A-Z2-7]{16,}$/.test(secret)) throw new MockError("That key doesn't look right. Copy the secret key from the Microsoft page again.");
+    // Fake but stable per 30 s window and per key.
+    const window = Math.floor(Date.now() / 30_000);
+    let h = window;
+    for (const ch of secret) h = (h * 31 + ch.charCodeAt(0)) % 1_000_000;
+    return { code: String(h).padStart(6, "0"), secondsLeft: 30 - Math.floor((Date.now() / 1000) % 30) };
+  }
+  if (key === "POST /api/setup/login") {
+    if (!settings.netid || !settings.passwordSet || !settings.totpSet) return { ok: false, reason: "missing_credentials" };
+    const forced = params.get("loginFail");
+    const stages = ["Opening Banner", "Microsoft sign in", "Authenticator code", "Loading registration"];
+    for (const stage of stages) {
+      status = { ...status, session: { ...status.session, state: "logging_in", stage, lastError: null } };
+      push({ type: "status", status: clone(status) });
+      await wait(500);
+    }
+    if (forced) {
+      status = { ...status, session: { ...status.session, state: "error", stage: null, lastError: forced } };
+      push({ type: "status", status: clone(status) });
+      return { ok: false, reason: forced };
+    }
+    status = { ...status, session: { ...status.session, state: "warm", stage: null, since: Date.now(), loggedOut: false } };
+    push({ type: "status", status: clone(status) });
+    return { ok: true };
+  }
+  if (key === "PUT /api/setup/step") {
+    settings = { ...settings, onboardingStep: body.step };
+    push({ type: "settings", settings: clone(settings) });
+    return clone(settings);
+  }
+  if (key === "PUT /api/mode") {
+    const next = body.mode as SystemStatus["mode"];
+    const changed = next !== status.mode;
+    settings = { ...settings, mode: next, ...(next !== "live" ? { liveEnabled: false, liveTerm: null } : {}) };
+    status = { ...status, restarting: changed, ...(next !== "live" ? { liveEnabled: false, liveTerm: null } : {}) };
+    push({ type: "settings", settings: clone(settings) });
+    push({ type: "status", status: clone(status) });
+    if (changed)
+      setTimeout(() => {
+        status = {
+          ...status,
+          mode: next,
+          restarting: false,
+          poller: { ...status.poller, source: next === "simulated" ? "simulated" : "anonymous" },
+          session: { ...status.session, state: next === "simulated" ? "cold" : status.session.state },
+        };
+        push({ type: "status", status: clone(status) });
+      }, 2200);
+    return { ok: true, restarting: changed };
   }
   if (key === "PUT /api/settings") {
     if (body.pollIntervalSec !== undefined && body.pollIntervalSec < 10) throw new MockError("Polling interval must be at least 10 seconds.");
@@ -846,7 +931,7 @@ function planCourse(plan: Plan, subject: string, number: string): PlanCourse {
   };
 }
 
-{
+if (!fresh) {
   const p1 = newPlan(TERM, "Plan 1");
   p1.courses = [planCourse(p1, "CS", "225"), planCourse(p1, "CS", "173"), planCourse(p1, "MATH", "241")];
   p1.breaks = [{ days: ["M", "W", "F"], start: "12:00", end: "13:00" }];

@@ -2,7 +2,7 @@
 // Reads go through inPageFetch (fetch inside the page, with the page's cookies and synchronizer token).
 // Every Banner request passes the CDP write interceptor; the webkit backend has none, so it is refused.
 
-import { HumanActionRequired, LoginError, credentialsFromEnv, login, type Credentials, type LoginStage } from "../auth/login";
+import { HumanActionRequired, LoginError, credentialsFromSettings, login, type Credentials, type LoginStage } from "../auth/login";
 import { TotpWindowTracker, isValidTotpSecret } from "../auth/totp";
 import type { BrowserFactory, BrowserSession } from "../auth/browser";
 import type { Clock } from "../core/clock";
@@ -40,6 +40,13 @@ import {
   type SessionReason,
   type SubmitRow,
 } from "./registrar/types";
+
+const SESSION_TITLES: Record<SessionState, string> = {
+  cold: "Banner session disconnected",
+  logging_in: "Logging in to Banner",
+  warm: "Banner session connected",
+  error: "Banner session error",
+};
 
 export const BANNER_ORIGIN = "https://banner.apps.uillinois.edu";
 export const KEEPALIVE_MS = 4 * 60 * 1000;
@@ -180,7 +187,7 @@ export class BannerSessionManager implements SessionManager {
       this.deps.events.emit({
         kind: "session_state",
         severity: state === "error" ? "warning" : "info",
-        title: `Banner session ${state}`,
+        title: SESSION_TITLES[state],
         detail: reason,
         payload: { state, previous, reason },
       });
@@ -203,6 +210,11 @@ export class BannerSessionManager implements SessionManager {
     });
   }
 
+  /** Log in without choosing a term (the setup login check). */
+  async login(): Promise<void> {
+    await this.pageOp(() => this.warmBase());
+  }
+
   /** Log in (single flight) without choosing a term. */
   private async warmBase(): Promise<void> {
     if (this.disposed) throw new BannerSessionError("disposed");
@@ -215,12 +227,11 @@ export class BannerSessionManager implements SessionManager {
   }
 
   private async doWarm(): Promise<void> {
-    const creds = (this.deps.credentials ?? (() => credentialsFromEnv()))();
+    const creds = (this.deps.credentials ?? (() => credentialsFromSettings(this.deps.settings())))();
     // Configuration problems are reported once, not on every keep-warm check.
     const configError = (reason: SessionReason) => (this.lastError === reason && this.current === "error" ? new BannerSessionError(reason) : this.fail(reason));
     if (!creds) throw configError("missing_credentials");
     if (!isValidTotpSecret(creds.totpSecret)) throw configError("invalid_totp_secret");
-    if (this.deps.config.browserBackend !== "chrome") throw configError("webkit_unsupported");
     if (this.humanBlocked) throw new BannerSessionError(this.lastError ?? "login_blocked");
     if (this.deps.clock.now() < this.retryAt) throw new BannerSessionError(this.lastError ?? "login_failed");
 

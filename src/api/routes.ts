@@ -1,8 +1,12 @@
+import { credentialsFromSettings } from "../auth/login";
+import { isValidTotpSecret, TOTP_STEP_MS, totp } from "../auth/totp";
 import { SCHEDULE_READER } from "../banner/registrar/types";
+import { isMode } from "../core/config";
 import { isTermCode, termLabel } from "../core/terms";
 import { PLAN_LIMITS } from "../core/db";
 import {
   NOTIFY_EVENTS,
+  ONBOARDING_STEPS,
   type AnyFilters,
   type Day,
   type Plan,
@@ -12,6 +16,7 @@ import {
   type PlanSort,
   type Settings,
   type SettingsPatch,
+  type SetupLoginResult,
   type Snapshot,
   type StreamMessage,
 } from "../core/types";
@@ -53,6 +58,19 @@ function id(value: string | undefined): number {
 }
 
 const CRN = /^\d{5}$/;
+const MISSING_ACCOUNT = "Add your NetID, password, and authenticator key in Settings first.";
+const BAD_KEY = "That key doesn't look right. Copy the secret key from the Microsoft page again.";
+
+/** "abc2", "ABC2@illinois.edu" and " abc2 " all become "abc2". */
+export function normalizeNetid(raw: string): string | null {
+  const netid = raw.trim().toLowerCase().replace(/@illinois\.edu$/, "");
+  return /^[a-z][a-z0-9]{1,15}$/.test(netid) ? netid : null;
+}
+
+/** Microsoft shows the key in groups ("abcd efgh ..."). Spaces and dashes are dropped, letters uppercased. */
+export function normalizeTotpSecret(raw: string): string {
+  return raw.replace(/[\s-]/g, "").toUpperCase();
+}
 const DAYS: Day[] = ["M", "T", "W", "R", "F", "S", "U"];
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -235,12 +253,20 @@ function sse(s: AppServices, terms: Snapshot["terms"], req: Request): Response {
           cleanup();
         }
       };
+      let offClose = () => {};
       const cleanup = () => {
         unsubscribe();
+        offClose();
         if (heartbeat) clearInterval(heartbeat);
       };
       send({ type: "hello", snapshot: snapshot(s, terms) });
       unsubscribe = s.bus.subscribe(send);
+      offClose = s.bus.onClose(() => {
+        cleanup();
+        try {
+          controller.close();
+        } catch {}
+      });
       heartbeat = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(`: ping\n\n`));
@@ -325,6 +351,12 @@ function wrap(handler: Handler): Handler {
 }
 
 export function apiRoutes(s: AppServices) {
+  const hasCredentials = () => credentialsFromSettings(s.settings()) !== null;
+  /** Test and Live need the real Banner session and a saved account. */
+  const needsRealBanner = () => {
+    if (!s.session || s.config.mode === "simulated") throw new HttpError(409, "Switch the mode to Test or Live in Settings first.");
+    if (!hasCredentials()) throw new HttpError(409, MISSING_ACCOUNT);
+  };
   let termsCache: { at: number; terms: Snapshot["terms"] } = { at: 0, terms: [] };
   const terms = async () => {
     if (Date.now() - termsCache.at > 60 * 60 * 1000 || termsCache.terms.length === 0) {
@@ -617,11 +649,11 @@ export function apiRoutes(s: AppServices) {
     },
     "/api/session/login": {
       POST: async () => {
-        if (!s.session) throw new HttpError(409, "There is no Banner session in simulated mode.");
+        needsRealBanner();
         const term = s.settings().activeTerm;
         if (!term) throw new HttpError(400, "Pick a term first.");
         s.applySettings({ sessionLoggedOut: false });
-        void s.session.ensureWarm(term).catch(() => {});
+        void s.session!.ensureWarm(term).catch(() => {});
         return json({ ok: true });
       },
     },
@@ -636,8 +668,7 @@ export function apiRoutes(s: AppServices) {
       POST: async req => {
         const { term } = await body<{ term: string }>(req);
         if (!isTermCode(term)) throw new HttpError(400, "Unknown term.");
-        if (s.config.mode === "simulated") throw new HttpError(409, "Testing needs REGISTRATION_MODE=test or live in your .env file.");
-        if (!s.config.hasCredentials) throw new HttpError(409, "Add your NetID, password, and TOTP secret to the .env file first.");
+        needsRealBanner();
         return json(await s.rehearse(term));
       },
     },
@@ -645,8 +676,7 @@ export function apiRoutes(s: AppServices) {
       POST: async req => {
         const { term } = await body<{ term: string }>(req);
         if (!isTermCode(term)) throw new HttpError(400, "Unknown term.");
-        if (s.config.mode === "simulated") throw new HttpError(409, "Reading the time ticket needs REGISTRATION_MODE=test or live in your .env file.");
-        if (!s.config.hasCredentials) throw new HttpError(409, "Add your NetID, password, and TOTP secret to the .env file first.");
+        needsRealBanner();
         return json(await s.detectTicket(term));
       },
     },
@@ -655,8 +685,9 @@ export function apiRoutes(s: AppServices) {
         const { enabled, confirmText } = await body<{ enabled: boolean; confirmText?: string }>(req);
         const settings = s.settings();
         if (!enabled) return json(s.applySettings({ liveEnabled: false, liveTerm: null }));
-        if (s.config.mode !== "live") throw new HttpError(403, "Live registration needs REGISTRATION_MODE=live in your .env file.");
-        if (!s.config.hasCredentials) throw new HttpError(409, "Add your NetID, password, and TOTP secret to the .env file first.");
+        if (s.config.mode !== "live" || settings.mode !== "live") throw new HttpError(403, "Switch the mode to Live in Settings first.");
+        if (s.config.hotReload) throw new HttpError(409, "Live can't be turned on while running with bun dev. Use bun start.");
+        if (!hasCredentials()) throw new HttpError(409, MISSING_ACCOUNT);
         const term = settings.activeTerm;
         if (!term) throw new HttpError(400, "Pick a term first.");
         // The schedule reader must be proven on this account first: a passing rehearsal for this term in the last 24 h.
@@ -679,6 +710,76 @@ export function apiRoutes(s: AppServices) {
       },
     },
 
+    "/api/credentials": {
+      PUT: async req => {
+        const raw = await body<{ netid?: unknown; password?: unknown; totpSecret?: unknown }>(req);
+        const patch: Partial<Settings> = {};
+        if (raw.netid !== undefined) {
+          const netid = typeof raw.netid === "string" ? normalizeNetid(raw.netid) : null;
+          if (!netid) throw new HttpError(400, "Enter your NetID, the part before @illinois.edu.");
+          patch.netid = netid;
+        }
+        if (raw.password !== undefined) {
+          if (typeof raw.password !== "string" || raw.password.length === 0 || raw.password.length > 256) throw new HttpError(400, "Enter your password.");
+          patch.password = raw.password;
+        }
+        if (raw.totpSecret !== undefined) {
+          const key = typeof raw.totpSecret === "string" ? normalizeTotpSecret(raw.totpSecret) : "";
+          if (!isValidTotpSecret(key) || key.length > 128) throw new HttpError(400, BAD_KEY);
+          patch.totpSecret = key;
+        }
+        if (Object.keys(patch).length === 0) return json(s.store.publicSettings());
+        const updated = s.applySettings(patch);
+        s.events.emit({ kind: "settings_changed", severity: "info", title: "Account details updated" });
+        return json(updated);
+      },
+    },
+    "/api/setup/totp-code": {
+      POST: async req => {
+        const { secret } = await body<{ secret?: unknown }>(req);
+        const key = typeof secret === "string" ? normalizeTotpSecret(secret) : "";
+        if (!isValidTotpSecret(key) || key.length > 128) throw new HttpError(400, BAD_KEY);
+        const now = Date.now();
+        return json({ code: totp(key, now), secondsLeft: Math.ceil((TOTP_STEP_MS - (now % TOTP_STEP_MS)) / 1000) });
+      },
+    },
+    "/api/setup/login": {
+      POST: async () => {
+        needsRealBanner();
+        s.applySettings({ sessionLoggedOut: false });
+        // Someone pressing "Try logging in" again gets a real attempt, not the earlier blocked result.
+        if (s.session!.state() === "error") await s.session!.goCold("retry");
+        try {
+          await s.session!.login();
+          return json({ ok: true } satisfies SetupLoginResult);
+        } catch (error) {
+          const reason = typeof (error as { reason?: unknown })?.reason === "string" ? (error as { reason: string }).reason : "login_failed";
+          return json({ ok: false, reason } satisfies SetupLoginResult);
+        }
+      },
+    },
+    "/api/setup/step": {
+      PUT: async req => {
+        const { step } = await body<{ step?: unknown }>(req);
+        if (!(ONBOARDING_STEPS as readonly unknown[]).includes(step)) throw new HttpError(400, "Unknown setup step.");
+        return json(s.applySettings({ onboardingStep: step as Settings["onboardingStep"] }));
+      },
+    },
+    "/api/mode": {
+      PUT: async req => {
+        const { mode } = await body<{ mode?: unknown }>(req);
+        if (!isMode(mode)) throw new HttpError(400, "Mode must be live, rehearsal, or simulated.");
+        if (mode === s.settings().mode && mode === s.config.mode) return json({ ok: true, restarting: false });
+        if (!s.restart) throw new HttpError(501, "This server can't switch modes on its own. Restart it instead.");
+        // Save first: the live gate also checks the saved mode, so Live is off from this moment.
+        s.applySettings({ mode, liveEnabled: false, liveTerm: null });
+        const label = { live: "Live", rehearsal: "Test", simulated: "Simulated" }[mode];
+        s.events.emit({ kind: "control", severity: "warning", title: `Mode changed to ${label}` });
+        const restart = s.restart;
+        setTimeout(restart, 100);
+        return json({ ok: true, restarting: true });
+      },
+    },
     "/api/settings": {
       GET: () => json(s.store.publicSettings()),
       PUT: async req => {

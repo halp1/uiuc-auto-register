@@ -1,8 +1,10 @@
 import { Bell, CircleCheck, CircleX, LogIn, LogOut, RefreshCw, Send, TriangleAlert, X, Zap } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RehearsalReport } from "../../src/core/contracts";
-import { NOTIFY_EVENTS, type NotifyEvent, type PublicSettings, type Route, type SettingsPatch } from "../../src/core/types";
+import { NOTIFY_EVENTS, type Mode, type NotifyEvent, type PublicSettings, type Route, type SettingsPatch } from "../../src/core/types";
 import { ConfirmDialog } from "@/components/confirm";
+import { CredentialFields, credentialPatch, type CredentialDraft } from "@/components/credentials";
+import { TestReportView } from "@/components/test-report";
 import { SeatCount } from "@/components/data";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,6 +16,8 @@ import { Select } from "@/components/ui/select";
 import { Status } from "@/components/ui/status-dot";
 import { Switch } from "@/components/ui/switch";
 import { api, type SimState } from "@/lib/api";
+import { modeNames, useModeSwitch } from "@/lib/mode-switch";
+import { disablePush, enablePush, pushStateFromError, usePushState } from "@/lib/push";
 import { chicagoLocalToIso, countdown, formatDateTime, isoToChicagoLocal, notifyLabels, termName, useNow } from "@/lib/format";
 import { setNavigationGuard } from "@/lib/router";
 import { local, useStore } from "@/lib/store";
@@ -236,6 +240,41 @@ function CardNote({ error, note }: { error: string | null; note?: ReactNode }) {
   return <CardFooter>{error ? <InlineError>{error}</InlineError> : note}</CardFooter>;
 }
 
+// ---------- Account ----------
+
+function AccountCard({ settings }: { settings: PublicSettings }) {
+  const [draft, setDraft] = useState<CredentialDraft>({ netid: settings.netid ?? "", password: "", totpSecret: "" });
+  const action = useAction();
+  const patch = credentialPatch(draft, settings);
+  const dirty = Object.keys(patch).length > 0;
+
+  async function save() {
+    const next = await action.run("save", () => api.credentials(credentialPatch(draft, settings)));
+    if (!next) return false;
+    local.settings(next);
+    setDraft({ netid: next.netid ?? "", password: "", totpSecret: "" });
+    return true;
+  }
+  usePending("account", {
+    dirty,
+    save,
+    reset: () => {
+      setDraft({ netid: settings.netid ?? "", password: "", totpSecret: "" });
+      action.setError(null);
+    },
+  });
+
+  return (
+    <Card id="account" className="scroll-mt-20">
+      <CardBody>
+        <CardTitle>Account</CardTitle>
+        <CredentialFields settings={settings} draft={draft} onChange={p => setDraft(d => ({ ...d, ...p }))} />
+      </CardBody>
+      <CardNote error={action.error} />
+    </Card>
+  );
+}
+
 // ---------- Registration ----------
 
 function RegistrationCard({ settings }: { settings: PublicSettings }) {
@@ -290,12 +329,47 @@ function RegistrationCard({ settings }: { settings: PublicSettings }) {
     }
   }
 
-  const liveAvailable = status.mode === "live";
+  const liveAvailable = status.mode === "live" && !status.hotReload;
+  const modeSwitch = useModeSwitch();
+  const [pendingMode, setPendingMode] = useState<Mode | null>(null);
+
+  function chooseMode(next: Mode) {
+    if (next === status.mode) return;
+    if (status.mode === "live" && settings.liveEnabled) setPendingMode(next);
+    else modeSwitch.switchTo(next);
+  }
 
   return (
     <Card id="registration" className="scroll-mt-20">
       <CardBody>
         <CardTitle>Registration</CardTitle>
+        <Row
+          id="mode-label"
+          title="Mode"
+          hint={
+            modeSwitch.switching ? (
+              <Status tone="warning" pulse className="text-[0.8125rem]">
+                Restarting
+              </Status>
+            ) : (
+              { live: "Logs in and registers", rehearsal: "Logs in, never submits", simulated: "Fake Banner, nothing real" }[status.mode]
+            )
+          }
+          control={
+            <Select
+              aria-label="Mode"
+              className="w-36"
+              value={modeSwitch.target && modeSwitch.switching ? modeSwitch.target : status.mode}
+              onValueChange={v => chooseMode(v as Mode)}
+              disabled={modeSwitch.switching}
+              options={(["live", "rehearsal", "simulated"] as Mode[]).map(m => ({ value: m, label: modeNames[m] }))}
+            />
+          }
+        />
+        <InlineError>{modeSwitch.error}</InlineError>
+
+        <div className="h-px bg-border" />
+
         <Row
           title="When a seat opens"
           control={
@@ -350,7 +424,9 @@ function RegistrationCard({ settings }: { settings: PublicSettings }) {
               ? settings.liveEnabled
                 ? `On for ${termName(terms, settings.liveTerm)}`
                 : "Run a passing test first"
-              : "Needs REGISTRATION_MODE=live on the server"
+              : status.hotReload
+                ? "Live can't be turned on while running with bun dev. Use bun start."
+                : "Switch the mode to Live first"
           }
           control={
             <Switch
@@ -370,6 +446,16 @@ function RegistrationCard({ settings }: { settings: PublicSettings }) {
         {liveError && !liveOpen && <InlineError>{liveError}</InlineError>}
       </CardBody>
       <CardNote error={action.error} />
+
+      <ConfirmDialog
+        open={pendingMode !== null}
+        onOpenChange={o => !o && setPendingMode(null)}
+        title={pendingMode ? `Turn off Live and switch to ${modeNames[pendingMode]}?` : ""}
+        confirmLabel="Switch"
+        onConfirm={async () => {
+          if (pendingMode) await modeSwitch.switchTo(pendingMode);
+        }}
+      />
 
       <Dialog
         open={liveOpen}
@@ -663,36 +749,6 @@ function formatCheck(ts: number, now: number) {
 
 // ---------- Notifications ----------
 
-function urlBase64ToUint8Array(base64: string) {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const raw = atob((base64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-
-type PushState = "unsupported" | "denied" | "off" | "on" | "checking";
-
-function usePushState(): [PushState, (s: PushState) => void] {
-  const [state, setState] = useState<PushState>("checking");
-  useEffect(() => {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
-      setState("unsupported");
-      return;
-    }
-    if (Notification.permission === "denied") {
-      setState("denied");
-      return;
-    }
-    navigator.serviceWorker
-      .getRegistration("/sw.js")
-      .then(reg => reg?.pushManager.getSubscription())
-      .then(sub => setState(sub ? "on" : "off"))
-      .catch(() => setState("off"));
-  }, []);
-  return [state, setState];
-}
-
 /** Mirrors the server check: discord.com or discordapp.com, optionally ptb or canary. */
 const WEBHOOK_URL = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/;
 
@@ -759,35 +815,20 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
     if (res) a.setMessage({ ok: res.ok, text: res.detail });
   }
 
-  async function enablePush() {
+  async function turnOnPush() {
     await push.run("enable", async () => {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        setPushState(permission === "denied" ? "denied" : "off");
-        throw new Error(permission === "denied" ? "Notifications are blocked for this site in your browser." : "Permission was not granted.");
+      try {
+        setPushState(await enablePush());
+      } catch (e) {
+        const next = pushStateFromError(e);
+        if (next) setPushState(next);
+        throw e;
       }
-      const reg = await navigator.serviceWorker.register("/sw.js");
-      await navigator.serviceWorker.ready;
-      const { publicKey } = await api.vapid();
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(publicKey),
-      });
-      await api.pushSubscribe(sub.toJSON());
-      setPushState("on");
     });
   }
 
-  async function disablePush() {
-    await push.run("disable", async () => {
-      const reg = await navigator.serviceWorker.getRegistration("/sw.js");
-      const sub = await reg?.pushManager.getSubscription();
-      if (sub) {
-        await api.pushUnsubscribe(sub.endpoint);
-        await sub.unsubscribe();
-      }
-      setPushState("off");
-    });
+  async function turnOffPush() {
+    await push.run("disable", async () => setPushState(await disablePush()));
   }
 
   const setRoute = (event: NotifyEvent, channel: keyof Route, on: boolean) =>
@@ -960,14 +1001,14 @@ function NotificationsCard({ settings }: { settings: PublicSettings }) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {pushState === "on" ? (
-              <Button size="sm" variant="secondary" onClick={disablePush} loading={push.busy === "disable"}>
+              <Button size="sm" variant="secondary" onClick={turnOffPush} loading={push.busy === "disable"}>
                 Turn off
               </Button>
             ) : (
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={enablePush}
+                onClick={turnOnPush}
                 loading={push.busy === "enable"}
                 disabled={pushState === "unsupported" || pushState === "checking"}
               >
@@ -1097,9 +1138,9 @@ function SessionCard() {
   const [confirmLogout, setConfirmLogout] = useState(false);
   const signedOut = session.state === "cold" || session.state === "error";
   const stateLabel = {
-    cold: session.loggedOut ? "Logged out" : "Cold",
+    cold: session.loggedOut ? "Logged out" : "Not connected",
     logging_in: session.stage ?? "Logging in",
-    warm: "Warm",
+    warm: "Connected",
     error: "Error",
   }[session.state];
 
@@ -1155,34 +1196,16 @@ function SessionCard() {
 
 // ---------- Test (internally "rehearsal") ----------
 
-type TestReport = RehearsalReport;
-
-function stepLabel(name: string): string {
-  if (name === "login") return "Log in";
-  if (name === "term_open") return "Term open for registration";
-  if (name === "read_schedule") return "Read your schedule";
-  if (name === "no_writes") return "Nothing submitted";
-  if (name === "time_ticket") return "Time ticket";
-  const crn = /^crn_(\d+)$/.exec(name);
-  if (crn) return `CRN ${crn[1]} exists`;
-  return name;
-}
-
 function TestCard({ term }: { term: string | null }) {
   const action = useAction();
-  const [report, setReport] = useState<TestReport | null>(null);
+  const [report, setReport] = useState<RehearsalReport | null>(null);
   const terms = useStore(s => s.terms);
 
   async function run() {
     if (!term) return;
     const r = await action.run("run", () => api.rehearsal(term));
-    if (r) setReport(r as TestReport);
+    if (r) setReport(r);
   }
-
-  const readerTerm = report?.readerTerm ?? report?.term ?? term;
-  const readerName = termName(terms, readerTerm);
-  const opensAt = report?.opensAt ?? null;
-  const classes = report?.schedule?.length ?? 0;
 
   return (
     <Card id="test" className="scroll-mt-20">
@@ -1203,58 +1226,7 @@ function TestCard({ term }: { term: string | null }) {
             Running. This takes about 20 seconds.
           </p>
         )}
-        {report && opensAt && (
-          <p role="status" className="rounded-md border border-border bg-black px-3 py-2.5 text-[0.8125rem] text-fg">
-            Registration opens <span className="tabular-nums">{formatDateTime(opensAt)}</span>.
-            {report.schedule && readerTerm !== report.term && (
-              <span className="text-fg-muted">
-                {" "}
-                Your schedule reader was checked on {readerName} ({classes} {classes === 1 ? "class" : "classes"}).
-              </span>
-            )}
-          </p>
-        )}
-        {report && (
-          <div className="flex flex-col gap-3">
-            <ol className="overflow-hidden rounded-md border border-border [&>*+*]:border-t [&>*+*]:border-border">
-              {report.steps.map((step, i) => (
-                <li key={i} className="flex items-center gap-3 bg-black px-3 py-2.5 text-[0.8125rem]">
-                  {step.ok ? (
-                    <CircleCheck className="size-4 shrink-0 text-ready" aria-label="Passed" />
-                  ) : (
-                    <CircleX className="size-4 shrink-0 text-error-fg" aria-label="Failed" />
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block">{stepLabel(step.name)}</span>
-                    {step.detail && <span className={cn("block text-xs", step.ok ? "text-fg-muted" : "text-error-fg")}>{step.detail}</span>}
-                  </span>
-                  <span className="font-mono text-xs text-fg-subtle tabular-nums">{(step.ms / 1000).toFixed(1)}s</span>
-                </li>
-              ))}
-            </ol>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-[0.8125rem]">
-              {report.eligibility && (
-                <>
-                  <dt className="text-fg-muted">Eligibility</dt>
-                  <dd>{report.eligibility.allowed ? "Allowed" : report.eligibility.messages.join(" ") || "Not allowed"}</dd>
-                </>
-              )}
-              {report.schedule && (
-                <>
-                  <dt className="text-fg-muted">{readerName} classes</dt>
-                  <dd className="font-mono tabular-nums">{report.schedule.join(", ") || "None"}</dd>
-                </>
-              )}
-              <dt className="text-fg-muted">Writes blocked</dt>
-              <dd className={cn("font-mono tabular-nums", report.blockedWrites > 0 && "text-warning")}>{report.blockedWrites}</dd>
-            </dl>
-            {report.crnChecks.some(c => !c.exists) && (
-              <InlineError>
-                Missing CRNs: {report.crnChecks.filter(c => !c.exists).map(c => c.crn).join(", ")}
-              </InlineError>
-            )}
-          </div>
-        )}
+        {report && <TestReportView report={report} />}
       </CardBody>
       <CardFooter>
         <div className="min-w-0 flex-1">
@@ -1419,6 +1391,23 @@ function SimulatorCard({ term }: { term: string | null }) {
 
 // ---------- page ----------
 
+function RunSetupAgain() {
+  const action = useAction();
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        disabled={action.busy !== null}
+        onClick={() => action.run("setup", async () => local.settings(await api.setupStep("account")))}
+        className="rounded text-[0.8125rem] text-fg-muted underline decoration-border-hover underline-offset-2 transition-colors duration-150 hover:text-fg disabled:opacity-50"
+      >
+        Run setup again
+      </button>
+      <InlineError>{action.error}</InlineError>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const settings = useStore(s => s.settings);
   const mode = useStore(s => s.status!.mode);
@@ -1437,6 +1426,7 @@ export function SettingsPage() {
       <div className="flex flex-col gap-6 pb-20">
         <PageHeader title="Settings" />
         <div className="flex max-w-3xl flex-col gap-6">
+          <AccountCard settings={settings} />
           <RegistrationCard settings={settings} />
           <PollingCard settings={settings} />
           <TermCard settings={settings} />
@@ -1444,6 +1434,7 @@ export function SettingsPage() {
           <SessionCard />
           {(mode === "rehearsal" || mode === "live") && <TestCard term={settings.activeTerm} />}
           {mode === "simulated" && <SimulatorCard term={settings.activeTerm} />}
+          <RunSetupAgain />
         </div>
       </div>
       <UnsavedBar entries={dirtyEntries} />

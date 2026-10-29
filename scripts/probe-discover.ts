@@ -1,4 +1,4 @@
-// User-run discovery probe (test mode only, strictly read-only).
+// User-run discovery probe (always Test mode, strictly read-only).
 //   bun run probe:discover [term ...]        default: Fall 2026 and Spring 2027
 // Logs in with the write interceptor blocking ALL writes, then for each term:
 //   1. asks Banner whether the term is open for registration (term/search, the same read-only call
@@ -13,24 +13,16 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../src/core/bus";
 import { systemClock } from "../src/core/clock";
-import { loadConfig } from "../src/core/config";
 import { Store } from "../src/core/db";
+import { probeSetup } from "./_probe";
 import { Events } from "../src/core/events";
 import { isTermCode, termLabel } from "../src/core/terms";
 import { redactUrl } from "../src/banner/interceptor";
 import { BannerSessionManager, BANNER_ORIGIN } from "../src/banner/session";
 import { SSB_PATH } from "../src/banner/registrar/types";
 
-const config = loadConfig();
-if (config.mode !== "rehearsal") {
-  console.error("probe:discover requires REGISTRATION_MODE=test");
-  process.exit(2);
-}
-if (config.browserBackend !== "chrome") {
-  console.error("probe:discover requires BROWSER_BACKEND=chrome (the write interceptor needs it)");
-  process.exit(2);
-}
-const terms = process.argv.slice(2).length ? process.argv.slice(2) : ["120268", "120271"];
+const { config, credentials, args } = probeSetup("probe:discover");
+const terms = args.length ? args : ["120268", "120271"];
 if (!terms.every(isTermCode)) {
   console.error("Usage: bun run probe:discover [term code ...]");
   process.exit(2);
@@ -78,7 +70,7 @@ const events = new Events(store, new Bus());
 events.onEvent(e => {
   if (e.kind === "login_stage" || e.kind === "session_error") console.log(`[${e.kind}] ${e.title}${e.detail ? `: ${e.detail}` : ""}`);
 });
-const manager = new BannerSessionManager({ config, events, store, clock: systemClock, settings: () => store.getSettings() });
+const manager = new BannerSessionManager({ config, events, store, clock: systemClock, settings: () => store.getSettings(), credentials: () => credentials });
 const report: Record<string, any> = { startedAt: new Date().toISOString(), terms: {} };
 
 type Captured = { id: string; method: string; path: string; status: number | null; done: boolean };

@@ -133,7 +133,7 @@ const resultCache = new Map<number, CachedResult>();
 
 // ---------- page ----------
 
-export function PlanPage({ id }: { id: number | null }) {
+export function PlanPage({ id, guide = false }: { id: number | null; guide?: boolean }) {
   const term = useStore(s => s.settings?.activeTerm ?? null);
   const terms = useStore(s => s.terms);
   const plans = useStore(s => (term ? s.plans[term] : undefined));
@@ -187,7 +187,7 @@ export function PlanPage({ id }: { id: number | null }) {
     );
 
   const plan = plans.find(p => p.id === id) ?? plans[0]!;
-  return <Planner key={plan.id} plan={plan} plans={plans} />;
+  return <Planner key={plan.id} plan={plan} plans={plans} guide={guide} />;
 }
 
 function PlanTitle({ children }: { children?: ReactNode }) {
@@ -343,7 +343,7 @@ function PlanPicker({ plan, plans }: { plan: Plan; plans: Plan[] }) {
 
 // ---------- planner ----------
 
-function Planner({ plan, plans }: { plan: Plan; plans: Plan[] }) {
+function Planner({ plan, plans, guide }: { plan: Plan; plans: Plan[]; guide: boolean }) {
   const cached = resultCache.get(plan.id) ?? null;
   const [result, setResult] = useState<CachedResult | null>(cached);
   const [generating, setGenerating] = useState(false);
@@ -421,6 +421,8 @@ function Planner({ plan, plans }: { plan: Plan; plans: Plan[] }) {
         )}
       </PlanTitle>
 
+      {guide && <PlanGuide plan={plan} plans={plans} generated={!!result} />}
+
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[288px_minmax(0,1fr)] xl:min-h-0 xl:flex-1 xl:grid-cols-[288px_320px_minmax(0,1fr)]">
         <Rail
           plan={plan}
@@ -473,6 +475,65 @@ function Planner({ plan, plans }: { plan: Plan; plans: Plan[] }) {
         />
       )}
     </div>
+  );
+}
+
+// ---------- first-run guide ----------
+
+const GUIDE_KEY = "planGuideDismissed";
+
+function PlanGuide({ plan, plans, generated }: { plan: Plan; plans: Plan[]; generated: boolean }) {
+  const armed = useStore(s => s.wanted.some(w => w.armed && w.term === plan.term));
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(GUIDE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  if (dismissed) return null;
+  const items = [
+    { label: "Add the courses you want", done: plan.courses.length > 0 },
+    { label: "Choose Generate", done: generated },
+    { label: "Pick a schedule and choose Target this schedule. That arms it.", done: plans.some(p => p.target) || armed },
+  ];
+  const allDone = items.every(i => i.done);
+  return (
+    <section
+      aria-label="Getting started"
+      className="flex shrink-0 flex-col gap-3 rounded-lg border border-border bg-surface px-4 py-3 sm:flex-row sm:items-center sm:gap-6"
+    >
+      <ol className="flex min-w-0 flex-1 flex-col gap-1.5 text-[0.8125rem] sm:flex-row sm:flex-wrap sm:gap-x-6">
+        {items.map((item, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <span
+              className={cn(
+                "mt-px inline-flex size-[18px] shrink-0 items-center justify-center rounded-full border text-[0.6875rem] tabular-nums transition-colors duration-200",
+                item.done ? "border-[#1d4d43] bg-[#06150f] text-ready" : "border-border-strong text-fg-muted",
+              )}
+            >
+              {item.done ? <Check className="size-3" strokeWidth={3} aria-label="Done" /> : i + 1}
+            </span>
+            <span className={cn(item.done ? "text-fg-muted line-through decoration-fg-subtle" : "text-fg")}>{item.label}</span>
+          </li>
+        ))}
+      </ol>
+      <Button
+        size="xs"
+        variant={allDone ? "primary" : "ghost"}
+        className="self-end sm:self-auto"
+        onClick={() => {
+          try {
+            localStorage.setItem(GUIDE_KEY, "1");
+          } catch {
+            // Private mode. Hiding for this visit is enough.
+          }
+          setDismissed(true);
+        }}
+      >
+        Done
+      </Button>
+    </section>
   );
 }
 

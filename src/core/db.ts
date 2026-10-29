@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { ephemeralCipher, loadKeyFile, makeCipher, type Cipher } from "./secrets";
 import {
   NOTIFY_EVENTS,
   type AnyFilters,
@@ -104,8 +105,17 @@ export function defaultRouting(): Record<NotifyEvent, Route> {
   >;
 }
 
+/** Settings encrypted at rest. None of them reach the client. */
+export const SECRET_KEYS = ["password", "totpSecret", "discordToken", "discordWebhookUrl", "vapidPrivateKey"] as const;
+const SECRET_SET = new Set<string>(SECRET_KEYS);
+
 export function defaultSettings(): Settings {
   return {
+    mode: "live",
+    netid: null,
+    password: null,
+    totpSecret: null,
+    onboardingStep: "account",
     approvalMode: "auto",
     approvalAutoAfterMin: null,
     pollIntervalSec: 10,
@@ -191,12 +201,28 @@ function seatFromRow(row: Row): SeatInfo {
 
 export class Store {
   readonly db: Database;
+  private readonly cipher: Cipher;
+  private warnedUndecryptable = false;
 
-  constructor(path: string) {
+  /** Secrets use `<dir of path>/secret.key`, or a key that lives only in this process for ":memory:". */
+  constructor(path: string, cipher?: Cipher) {
     if (path !== ":memory:") mkdirSync(join(path, ".."), { recursive: true });
+    this.cipher = cipher ?? (path === ":memory:" ? ephemeralCipher() : makeCipher(loadKeyFile(dirname(path))));
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.migrate();
+    this.sealPlaintextSecrets();
+  }
+
+  /** Secrets saved before encryption existed are encrypted in place. */
+  private sealPlaintextSecrets() {
+    const rows = this.db.query("SELECT key, value FROM settings").all() as Row[];
+    const update = this.db.query("UPDATE settings SET value = ? WHERE key = ?");
+    for (const row of rows) {
+      if (!SECRET_SET.has(row.key)) continue;
+      const value = JSON.parse(row.value);
+      if (typeof value === "string") update.run(JSON.stringify({ enc: this.cipher.encrypt(value) }), row.key);
+    }
   }
 
   static open(dataDir: string): Store {
@@ -222,7 +248,10 @@ export class Store {
   getSettings(): Settings {
     const settings = defaultSettings();
     for (const row of this.db.query("SELECT key, value FROM settings").all() as Row[]) {
-      if (row.key in settings) (settings as any)[row.key] = JSON.parse(row.value);
+      if (!(row.key in settings)) continue;
+      const value = JSON.parse(row.value);
+      if (SECRET_SET.has(row.key)) (settings as any)[row.key] = this.unseal(value);
+      else (settings as any)[row.key] = value;
     }
     // Keep routing complete when new events are added later.
     const defaults = defaultRouting();
@@ -237,16 +266,30 @@ export class Store {
     this.tx(() => {
       for (const [key, value] of Object.entries(patch)) {
         if (value === undefined) continue;
-        stmt.run(key, JSON.stringify(value));
+        const stored = SECRET_SET.has(key) && typeof value === "string" ? { enc: this.cipher.encrypt(value) } : value;
+        stmt.run(key, JSON.stringify(stored));
       }
     });
     return this.getSettings();
   }
 
+  /** Stored secrets are { enc }. Anything else (null, or a value written before encryption) reads as null. */
+  private unseal(value: unknown): string | null {
+    if (!value || typeof value !== "object" || typeof (value as { enc?: unknown }).enc !== "string") return null;
+    const plain = this.cipher.decrypt((value as { enc: string }).enc);
+    if (plain === null && !this.warnedUndecryptable) {
+      this.warnedUndecryptable = true;
+      console.warn("A saved secret could not be decrypted (secret.key changed?). Enter it again in Settings.");
+    }
+    return plain;
+  }
+
   publicSettings(settings = this.getSettings()): PublicSettings {
-    const { discordToken, discordWebhookUrl, vapidPrivateKey, ...rest } = settings;
+    const { password, totpSecret, discordToken, discordWebhookUrl, vapidPrivateKey, ...rest } = settings;
     return {
       ...rest,
+      passwordSet: Boolean(password),
+      totpSet: Boolean(totpSecret),
       discordTokenHint: discordToken ? discordToken.slice(-4) : null,
       discordWebhookHint: discordWebhookUrl ? discordWebhookUrl.slice(-4) : null,
     };

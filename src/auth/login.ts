@@ -105,12 +105,11 @@ export interface Credentials {
   totpSecret: string;
 }
 
-export function credentialsFromEnv(env: Record<string, string | undefined> = process.env): Credentials | null {
-  const netid = env.UIUC_NETID?.trim();
-  const password = env.UIUC_PASSWORD;
-  const totpSecret = env.UIUC_TOTP_SECRET;
-  if (!netid || !password || !totpSecret) return null;
-  return { netid, password, totpSecret };
+/** The saved Illinois login, or null until all three parts are saved. */
+export function credentialsFromSettings(s: { netid: string | null; password: string | null; totpSecret: string | null }): Credentials | null {
+  const netid = s.netid?.trim();
+  if (!netid || !s.password || !s.totpSecret) return null;
+  return { netid, password: s.password, totpSecret: s.totpSecret };
 }
 
 export function fullNetId(netid: string): string {

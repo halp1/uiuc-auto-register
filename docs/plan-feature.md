@@ -30,4 +30,4 @@ Contract: `src/core/types.ts` (Plan*, `WantedCourse.planId`, stream message `pla
 - Copy rules: no middle dot, no em or en dashes, no semicolons in UI copy. Minimal copy. Accessible names on icon buttons.
 
 ## Safety
-Never start the real server from the repo dir (the user's `.env` would log into the real account). Never touch the real account. Use `bun web/dev/serve-mock.ts` for UI checks.
+Never start the real server against the user's `./data` (the saved login there would log into the real account). Never touch the real account. Use `bun web/dev/serve-mock.ts` for UI checks.

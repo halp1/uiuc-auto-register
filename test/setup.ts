@@ -1,6 +1,3 @@
-// Tests never run in live or rehearsal mode and never touch real credentials.
+// The app reads no environment variables. Tests build their own Config and in-memory stores,
+// so they never see a saved login and never reach the real account.
 process.env.NODE_ENV = "test";
-process.env.REGISTRATION_MODE = "simulated";
-delete process.env.UIUC_NETID;
-delete process.env.UIUC_PASSWORD;
-delete process.env.UIUC_TOTP_SECRET;

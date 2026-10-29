@@ -1,6 +1,9 @@
 import type { RehearsalReport } from "../../src/core/contracts";
 import type {
   AnyFilters,
+  Mode,
+  OnboardingStep,
+  SetupLoginResult,
   AppEvent,
   CourseDetail,
   Plan,
@@ -113,6 +116,13 @@ export const api = {
   generatePlan: (id: number) => request<PlanGenerateResult>("POST", `/api/plans/${id}/generate`),
   targetPlan: (id: number, picks: PlanPick[]) =>
     request<{ plan: Plan; wanted: WantedCourse[] }>("POST", `/api/plans/${id}/target`, { picks }),
+
+  credentials: (body: { netid?: string; password?: string; totpSecret?: string }) =>
+    request<PublicSettings>("PUT", "/api/credentials", body),
+  totpCode: (secret: string) => request<{ code: string; secondsLeft: number }>("POST", "/api/setup/totp-code", { secret }),
+  setupLogin: () => request<SetupLoginResult>("POST", "/api/setup/login"),
+  setupStep: (step: OnboardingStep) => request<PublicSettings>("PUT", "/api/setup/step", { step }),
+  setMode: (mode: Mode) => request<{ ok: true; restarting: boolean }>("PUT", "/api/mode", { mode }),
 
   pauseAll: () => request<{ ok: true }>("POST", "/api/control/pause"),
   resumeAll: () => request<{ ok: true }>("POST", "/api/control/resume"),

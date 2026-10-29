@@ -85,7 +85,7 @@ function setup(read: ((term: string) => Promise<TicketParse>) | null, start = Da
   const clock = new FakeClock(start);
   const store = new Store(":memory:");
   const events = new Events(store, new Bus());
-  let settings: Settings = { ...defaultSettings(), activeTerm: "120271" };
+  let settings: Settings = { ...defaultSettings(), activeTerm: "120271", netid: "student7", password: "pw", totpSecret: "JBSWY3DPEHPK3PXP" };
   let phase: SystemStatus["ticket"]["phase"] = "none";
   const reads: string[] = [];
   const detector = new TicketDetector({
@@ -117,6 +117,15 @@ function setup(read: ((term: string) => Promise<TicketParse>) | null, start = Da
 const found = (start: string, end: string | null = null): TicketParse => ({ status: "found", windows: [{ start, end }] });
 
 describe("TicketDetector", () => {
+  test("no automatic check before setup saves a login", async () => {
+    const t = setup(async () => found(iso(2026, 11, 9, 7)));
+    t.set({ password: null });
+    t.detector.start();
+    await t.clock.advance(DETECT_FIRST_DELAY_MS + DETECT_EVERY_MS);
+    expect(t.reads).toEqual([]);
+    t.detector.stop();
+  });
+
   test("automatic check applies the ticket and records the source", async () => {
     const t = setup(async () => found(iso(2026, 11, 9, 7), iso(2027, 1, 29, 23, 59)));
     t.detector.start();

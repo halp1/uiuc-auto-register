@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Bus } from "../../src/core/bus";
 import { FakeClock } from "../../src/core/clock";
-import { loadConfig, type Config } from "../../src/core/config";
+import { makeConfig, type Config } from "../../src/core/config";
 import { Store } from "../../src/core/db";
 import type { Settings } from "../../src/core/types";
 import { LiveNotAllowed, LiveRegistrar, makePostSubmitCheck } from "../../src/banner/registrar/live";
@@ -18,7 +18,7 @@ const model = (crn: string): RegistrationModel => ({ courseReferenceNumber: crn,
 const request = (addCrns: string[], dropCrn: string | null = null) => ({ term: TERM, bundleId: 1, addCrns, dropCrn });
 
 function cfg(mode: Config["mode"]): Config {
-  return { ...loadConfig({ NODE_ENV: "test" }), mode };
+  return makeConfig(mode, { chromePath: null });
 }
 
 function env(mode: Config["mode"] = "live", patch: Partial<Settings> = { liveEnabled: true, liveTerm: TERM }) {
@@ -83,6 +83,20 @@ describe("LiveRegistrar gating", () => {
     expect(() => new LiveRegistrar({ ...noTerm, api: fakeApi().api })).toThrow("term_mismatch");
     const other = env("live", { liveEnabled: true, liveTerm: TERM });
     expect(() => new LiveRegistrar({ ...other, api: fakeApi().api }, "120268")).toThrow("term_mismatch");
+  });
+
+  test("the saved mode and hot reload are gates too", async () => {
+    const saved = env("live", { liveEnabled: true, liveTerm: TERM, mode: "rehearsal" });
+    expect(() => new LiveRegistrar({ ...saved, api: fakeApi().api })).toThrow("not_live_mode");
+    const hot = env("live");
+    expect(() => new LiveRegistrar({ ...hot, config: makeConfig("live", { chromePath: null, hotReload: true }), api: fakeApi().api })).toThrow("not_live_mode");
+    // A mode switch saved mid-run stops the next register() before any call to Banner.
+    const e = env();
+    const fake = fakeApi();
+    const live = new LiveRegistrar({ ...e, api: fake.api });
+    e.store.updateSettings({ mode: "simulated" });
+    expect((await live.register(request(["31187"]))).outcome).toBe("aborted");
+    expect(fake.calls).toEqual([]);
   });
 
   test("register re-checks the gates on every call", async () => {

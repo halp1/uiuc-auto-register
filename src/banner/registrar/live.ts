@@ -1,5 +1,5 @@
 // Live registration. Every gate is re-checked on every call:
-//   config.mode === "live", settings.liveEnabled, settings.liveTerm === request.term.
+//   config.mode === "live", the saved mode is live, not hot reloading, settings.liveEnabled, settings.liveTerm === request.term.
 // Flow: snapshot schedule -> authorize interceptor for this exact batch -> addCRNRegistrationItems ->
 // preSubmitCheck -> submitRegistration/batch -> de-authorize -> re-read schedule -> postSubmitDiff.
 
@@ -19,8 +19,14 @@ export class LiveNotAllowed extends Error {
   }
 }
 
-export function liveGate(config: Pick<Config, "mode">, settings: Pick<Settings, "liveEnabled" | "liveTerm">, term: string | null): LiveNotAllowed | null {
-  if (config.mode !== "live") return new LiveNotAllowed("not_live_mode");
+export function liveGate(
+  config: Pick<Config, "mode"> & Partial<Pick<Config, "hotReload">>,
+  settings: Pick<Settings, "liveEnabled" | "liveTerm"> & Partial<Pick<Settings, "mode">>,
+  term: string | null,
+): LiveNotAllowed | null {
+  // The running mode and the saved mode must both say live. A mode switch saves first, then restarts.
+  if (config.mode !== "live" || (settings.mode !== undefined && settings.mode !== "live")) return new LiveNotAllowed("not_live_mode");
+  if (config.hotReload) return new LiveNotAllowed("not_live_mode");
   if (!settings.liveEnabled) return new LiveNotAllowed("live_disabled");
   if (!settings.liveTerm || (term !== null && settings.liveTerm !== term)) return new LiveNotAllowed("term_mismatch");
   return null;

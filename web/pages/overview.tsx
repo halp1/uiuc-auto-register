@@ -47,9 +47,9 @@ const pollerMeta: Record<string, { tone: Tone; label: string }> = {
 };
 
 const sessionMeta: Record<string, { tone: Tone; label: string }> = {
-  cold: { tone: "off", label: "Cold" },
+  cold: { tone: "off", label: "Not connected" },
   logging_in: { tone: "warning", label: "Logging in" },
-  warm: { tone: "ready", label: "Warm" },
+  warm: { tone: "ready", label: "Connected" },
   error: { tone: "error", label: "Error" },
 };
 

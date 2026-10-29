@@ -1,8 +1,10 @@
 import { RefreshCw } from "lucide-react";
+import { useEffect } from "react";
+import { ONBOARDING_STEPS, type OnboardingStep } from "../src/core/types";
 import { Shell } from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { linkClick, hrefWithMock, useRoute } from "@/lib/router";
+import { linkClick, hrefWithMock, navigate, useRoute } from "@/lib/router";
 import { reload, useStore } from "@/lib/store";
 import { ActivityPage } from "@/pages/activity";
 import { CoursePage } from "@/pages/course";
@@ -10,6 +12,7 @@ import { OverviewPage } from "@/pages/overview";
 import { PlanPage } from "@/pages/plan";
 import { SearchPage } from "@/pages/search";
 import { SettingsPage } from "@/pages/settings";
+import { SetupPage } from "@/pages/setup";
 
 function Loading() {
   return (
@@ -55,10 +58,30 @@ function NotFound() {
   );
 }
 
+/** Where the user is allowed to be: any setup step up to and including the saved one. */
+function allowedSetupStep(requested: string | null, current: OnboardingStep): OnboardingStep {
+  const order = ONBOARDING_STEPS as readonly string[];
+  if (!requested || !order.includes(requested) || requested === "done") return current;
+  return order.indexOf(requested) <= order.indexOf(current) ? (requested as OnboardingStep) : current;
+}
+
 export function App() {
   const route = useRoute();
   const ready = useStore(s => s.status !== null);
   const loadError = useStore(s => s.loadError);
+  const onboarding = useStore(s => s.settings?.onboardingStep ?? null);
+  const inSetup = !!onboarding && onboarding !== "done";
+
+  // Unfinished setup owns every route. Finished setup sends /setup back home.
+  const setupStep = inSetup ? allowedSetupStep(route.name === "setup" ? route.step : null, onboarding) : null;
+  useEffect(() => {
+    if (!ready || !onboarding) return;
+    if (inSetup) {
+      if (route.name !== "setup" || route.step !== setupStep) navigate(`/setup/${setupStep}`, { replace: true });
+    } else if (route.name === "setup") navigate("/", { replace: true });
+  }, [ready, onboarding, inSetup, route, setupStep]);
+
+  if (ready && inSetup) return <SetupPage step={setupStep!} />;
 
   let page;
   if (!ready) page = loadError ? <LoadFailed message={loadError} /> : <Loading />;
@@ -68,7 +91,7 @@ export function App() {
         page = <OverviewPage />;
         break;
       case "plan":
-        page = <PlanPage id={route.id} />;
+        page = <PlanPage id={route.id} guide={route.guide} />;
         break;
       case "search":
         page = <SearchPage initialQuery={route.q} />;
@@ -81,6 +104,9 @@ export function App() {
         break;
       case "settings":
         page = <SettingsPage />;
+        break;
+      case "setup":
+        page = <Loading />;
         break;
       default:
         page = <NotFound />;

@@ -118,7 +118,15 @@ export interface Route {
   webhook: boolean; // Discord channel webhook
 }
 
+export type OnboardingStep = "account" | "login" | "test" | "live" | "notify" | "done";
+export const ONBOARDING_STEPS: readonly OnboardingStep[] = ["account", "login", "test", "live", "notify", "done"];
+
 export interface Settings {
+  mode: Mode; // switched in Settings, the app restarts its Banner side on change
+  netid: string | null;
+  password: string | null; // encrypted at rest, never sent to the client
+  totpSecret: string | null; // encrypted at rest, never sent to the client
+  onboardingStep: OnboardingStep;
   approvalMode: "auto" | "approve";
   approvalAutoAfterMin: number | null; // approve mode: auto-register after N minutes, null = never
   pollIntervalSec: number; // >= 10
@@ -144,14 +152,19 @@ export interface Settings {
 }
 
 // What the client receives.
-export type PublicSettings = Omit<Settings, "discordToken" | "discordWebhookUrl" | "vapidPrivateKey"> & {
+export type PublicSettings = Omit<Settings, "password" | "totpSecret" | "discordToken" | "discordWebhookUrl" | "vapidPrivateKey"> & {
+  passwordSet: boolean;
+  totpSet: boolean;
   discordTokenHint: string | null; // e.g. "4f2a" (last 4) when set
   discordWebhookHint: string | null; // last 4 of the webhook token when set
 };
 
 export type SettingsPatch = Partial<
-  Omit<Settings, "vapidPublicKey" | "vapidPrivateKey" | "liveEnabled" | "liveTerm" | "swapsUnlocked" | "sessionLoggedOut" | "ticketSource" | "ticketCheckedAt" | "ticketCheckedTerm">
+  Omit<Settings, "mode" | "netid" | "password" | "totpSecret" | "onboardingStep" | "vapidPublicKey" | "vapidPrivateKey" | "liveEnabled" | "liveTerm" | "swapsUnlocked" | "sessionLoggedOut" | "ticketSource" | "ticketCheckedAt" | "ticketCheckedTerm">
 >;
+
+/** POST /api/setup/login. reason is a fixed code such as browser_launch_failed or password_rejected. */
+export type SetupLoginResult = { ok: true } | { ok: false; reason: string };
 
 /** One registration window from Banner's Prepare for Registration page. ISO timestamps. */
 export interface TicketWindow {
@@ -216,8 +229,9 @@ export type PollerState = "idle" | "running" | "backoff" | "degraded" | "paused"
 export type SessionState = "cold" | "logging_in" | "warm" | "error";
 
 export interface SystemStatus {
-  mode: Mode; // effective env mode
-  backend: "chrome" | "webkit";
+  mode: Mode; // the mode the running app was started in
+  restarting: boolean; // a mode change is in progress
+  hotReload: boolean; // started with bun --hot: Live cannot be turned on
   globalPaused: boolean;
   liveEnabled: boolean;
   liveTerm: string | null;

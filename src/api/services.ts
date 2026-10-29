@@ -47,4 +47,6 @@ export interface AppServices {
   /** Read the time ticket from Banner and apply it. Throws TicketDetectError with an HTTP status. */
   detectTicket(term: string): Promise<TicketDetectResult>;
   discordStatus(): { state: string; detail: string | null };
+  /** Rebuild the app in the saved mode. Absent in tests. */
+  restart?: () => void;
 }

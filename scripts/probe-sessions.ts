@@ -1,22 +1,18 @@
 // User-run probe: does the app's Banner session survive you logging into Banner yourself?
-//   REGISTRATION_MODE=test bun scripts/probe-sessions.ts [term]
+//   bun run probe:sessions [term]
 // Read-only: the write interceptor blocks every write for the whole run.
 
 import { Bus } from "../src/core/bus";
 import { systemClock } from "../src/core/clock";
-import { loadConfig } from "../src/core/config";
 import { Store } from "../src/core/db";
+import { probeSetup } from "./_probe";
 import { Events } from "../src/core/events";
 import { isTermCode } from "../src/core/terms";
 import { BannerSessionManager, CALENDAR_PATH } from "../src/banner/session";
 import { BannerSessionError } from "../src/banner/registrar/types";
 
-const config = loadConfig();
-if (config.mode !== "rehearsal") {
-  console.error("probe:sessions requires REGISTRATION_MODE=test");
-  process.exit(2);
-}
-const term = process.argv[2] ?? "120271";
+const { config, credentials, args } = probeSetup("probe:sessions");
+const term = args[0] ?? "120271";
 if (!isTermCode(term)) {
   console.error("Usage: bun scripts/probe-sessions.ts <term code>");
   process.exit(2);
@@ -27,7 +23,7 @@ const events = new Events(store, new Bus());
 events.onEvent(e => {
   if (e.kind === "login_stage" || e.kind === "session_error") console.log(`[${e.kind}] ${e.title}${e.detail ? `: ${e.detail}` : ""}`);
 });
-const manager = new BannerSessionManager({ config, events, store, clock: systemClock, settings: () => store.getSettings() });
+const manager = new BannerSessionManager({ config, events, store, clock: systemClock, settings: () => store.getSettings(), credentials: () => credentials });
 
 async function alive(): Promise<string> {
   try {

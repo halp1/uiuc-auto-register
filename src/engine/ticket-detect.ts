@@ -98,6 +98,8 @@ export class TicketDetector {
     if (!settings.ticketAuto || !term) return DETECT_EVERY_MS;
     // Logged out by the user: do not log in just to read the ticket. Check now still works.
     if (settings.sessionLoggedOut) return DETECT_RETRY_MS;
+    // Fresh install: no background logins until setup has a saved account.
+    if (!settings.netid || !settings.password || !settings.totpSecret) return DETECT_RETRY_MS;
     if (this.quiet(settings, now)) return DETECT_RETRY_MS;
     try {
       await this.detect(term, { manual: false });

@@ -52,6 +52,8 @@ export interface SessionManager {
   state(): SessionState;
   /** Log in if needed. Resolves when the registration page is ready. */
   ensureWarm(term: string): Promise<void>;
+  /** Log in without choosing a term. Rejects with the failure reason. */
+  login(): Promise<void>;
   /** Close the browser and forget the session. */
   goCold(reason: string): Promise<void>;
   /** Read currently registered CRNs for a term (read-only). */

@@ -31,7 +31,15 @@ export interface App {
   stop(): Promise<void>;
 }
 
-export async function createApp(config: Config, options: { clock?: Clock; store?: Store } = {}): Promise<App> {
+export interface AppOptions {
+  clock?: Clock;
+  store?: Store;
+  /** Rebuild the app in the saved mode (src/index.ts). Absent in tests. */
+  restart?: () => void;
+  restarting?: () => boolean;
+}
+
+export async function createApp(config: Config, options: AppOptions = {}): Promise<App> {
   const clock = options.clock ?? systemClock;
   const store = options.store ?? Store.open(config.dataDir);
   const bus = new Bus();
@@ -39,8 +47,8 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
   const startedAt = Date.now();
   const settings = () => store.getSettings();
 
-  // Live authorization never survives a mode downgrade: if .env no longer says live, Live is off.
-  if (config.mode !== "live" && store.getSettings().liveEnabled) store.updateSettings({ liveEnabled: false, liveTerm: null });
+  // Live authorization never survives a mode change or a hot-reloading dev server.
+  if ((config.mode !== "live" || config.hotReload) && store.getSettings().liveEnabled) store.updateSettings({ liveEnabled: false, liveTerm: null });
 
   // ---- Banner access per mode ----
   const sim = config.mode === "simulated" ? new SimBanner() : null;
@@ -125,7 +133,8 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
     const s = settings();
     return {
       mode: config.mode,
-      backend: config.browserBackend,
+      restarting: options.restarting?.() ?? false,
+      hotReload: config.hotReload,
       globalPaused: s.globalPaused,
       liveEnabled: s.liveEnabled,
       liveTerm: s.liveTerm,
@@ -169,6 +178,8 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
     const pub = store.publicSettings(after);
     bus.publish({ type: "settings", settings: pub });
     if (patch.discordToken !== undefined || patch.discordUserId !== undefined) void notifier.reload();
+    // New login details: drop the old session and any "needs a human" block so the next login uses them.
+    if (session && (patch.netid !== undefined || patch.password !== undefined || patch.totpSecret !== undefined)) void session.goCold("credentials_changed");
     if (patch.ticketAt !== undefined || patch.activeTerm !== undefined) ticket.reschedule();
     ticketDetector.settingsChanged(before, after);
     if (patch.activeTerm !== undefined && patch.activeTerm !== before.activeTerm) {
@@ -227,6 +238,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
     },
     detectTicket: term => ticketDetector.detect(term, { manual: true }),
     discordStatus: () => notifier.discordStatus(),
+    restart: options.restart,
   };
 
   let tick: ReturnType<typeof setInterval> | undefined;
@@ -272,6 +284,7 @@ export async function createApp(config: Config, options: { clock?: Clock; store?
       await orchestrator.stop();
       await real?.stop();
       await notifier.dispose();
+      bus.close();
       store.close();
     },
   };

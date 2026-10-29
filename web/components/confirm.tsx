@@ -12,12 +12,14 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   onConfirm,
+  tone = "danger",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: ReactNode;
   confirmLabel: string;
+  tone?: "danger" | "primary";
   onConfirm: () => Promise<unknown>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -54,7 +56,7 @@ export function ConfirmDialog({
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button variant="danger" onClick={run} loading={busy}>
+          <Button variant={tone} onClick={run} loading={busy}>
             {confirmLabel}
           </Button>
         </DialogFooter>

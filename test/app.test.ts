@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { apiRoutes } from "../src/api/routes";
 import { createApp, type App } from "../src/app";
-import { loadConfig } from "../src/core/config";
+import { makeConfig } from "../src/core/config";
 import { Store } from "../src/core/db";
 import type { StreamMessage } from "../src/core/types";
 import { seedCatalog } from "./fixtures/catalog";
@@ -35,7 +35,7 @@ beforeAll(async () => {
   store.db.query("INSERT INTO cat_meta (term, synced_at, courses) VALUES ('120271', ?, 0)").run(Date.now());
   // Catalog and linked sections for the plan routes, so course detail never fetches.
   await seedCatalog(store);
-  app = await createApp(loadConfig({ REGISTRATION_MODE: "simulated", NODE_ENV: "test" }), { store });
+  app = await createApp(makeConfig("simulated", { chromePath: null }), { store });
   // Simulated mode never polls Banner, but block outbound calls anyway.
   app.services.terms = async () => [{ code: "120271", description: "Spring 2027" }];
   const { routes } = apiRoutes(app.services);
@@ -208,5 +208,83 @@ test("schedule planner: plans, courses, generate, target", async () => {
     expect(state.wanted.filter((w: any) => w.subject === "MATH").map((w: any) => w.planId)).toEqual([null]);
   } finally {
     unsubscribe();
+  }
+});
+
+// ---------- account, setup, and mode (no env vars) ----------
+
+const KEY = "JBSWY3DPEHPK3PXP"; // RFC test seed
+
+test("credentials: validated, normalized, encrypted at rest, never returned", async () => {
+  expect((await call("PUT", "/api/credentials", { totpSecret: "not a key!" })).status).toBe(400);
+  expect((await call("PUT", "/api/credentials", { netid: "x y z" })).status).toBe(400);
+  expect((await call("PUT", "/api/credentials", { password: "" })).status).toBe(400);
+  const ok = await call("PUT", "/api/credentials", { netid: " JDoe2@illinois.edu ", password: "hunter2-Secret!", totpSecret: "jbsw y3dp ehpk 3pxp" });
+  expect(ok.status).toBe(200);
+  expect(ok.json.netid).toBe("jdoe2");
+  expect(ok.json.passwordSet).toBe(true);
+  expect(ok.json.totpSet).toBe(true);
+  expect(ok.json.password).toBeUndefined();
+  expect(ok.json.totpSecret).toBeUndefined();
+  const state = JSON.stringify((await call("GET", "/api/state")).json);
+  expect(state).not.toContain("hunter2");
+  expect(state).not.toContain(KEY);
+  const raw = JSON.stringify(app.services.store.db.query("SELECT key, value FROM settings").all());
+  expect(raw).not.toContain("hunter2");
+  expect(raw).not.toContain(KEY);
+  const settings = app.services.settings();
+  expect(settings.password).toBe("hunter2-Secret!");
+  expect(settings.totpSecret).toBe(KEY);
+  // Omitted fields stay as they are.
+  await call("PUT", "/api/credentials", { netid: "jdoe3" });
+  expect(app.services.settings().password).toBe("hunter2-Secret!");
+});
+
+test("totp-code: six digits for a pasted key, nothing stored", async () => {
+  expect((await call("POST", "/api/setup/totp-code", { secret: "nope" })).status).toBe(400);
+  const before = app.services.store.db.query("SELECT COUNT(*) AS n FROM settings").get();
+  const res = await call("POST", "/api/setup/totp-code", { secret: "abcd efgh ijkl mnop" });
+  expect(res.status).toBe(200);
+  expect(res.json.code).toMatch(/^\d{6}$/);
+  expect(res.json.secondsLeft).toBeGreaterThanOrEqual(1);
+  expect(res.json.secondsLeft).toBeLessThanOrEqual(30);
+  expect(app.services.store.db.query("SELECT COUNT(*) AS n FROM settings").get()).toEqual(before);
+});
+
+test("setup step: enum only", async () => {
+  expect((await call("PUT", "/api/setup/step", { step: "bogus" })).status).toBe(400);
+  const ok = await call("PUT", "/api/setup/step", { step: "test" });
+  expect(ok.status).toBe(200);
+  expect(ok.json.onboardingStep).toBe("test");
+  await call("PUT", "/api/setup/step", { step: "done" });
+});
+
+test("setup login is refused in simulated mode", async () => {
+  expect((await call("POST", "/api/setup/login")).status).toBe(409);
+});
+
+test("mode: validated, and refused when the server can't restart itself", async () => {
+  expect((await call("PUT", "/api/mode", { mode: "test" })).status).toBe(400);
+  const res = await call("PUT", "/api/mode", { mode: "live" });
+  expect(res.status).toBe(501);
+  // Nothing saved when the switch can't happen.
+  expect(app.services.settings().liveEnabled).toBe(false);
+});
+
+test("mode: saves, turns Live off, then restarts", async () => {
+  let restarted = 0;
+  app.services.restart = () => restarted++;
+  try {
+    app.services.store.updateSettings({ mode: "simulated", liveEnabled: true, liveTerm: "120271" });
+    const res = await call("PUT", "/api/mode", { mode: "rehearsal" });
+    expect(res.json).toEqual({ ok: true, restarting: true });
+    const s = app.services.settings();
+    expect(s.mode).toBe("rehearsal");
+    expect(s.liveEnabled).toBe(false);
+    expect(s.liveTerm).toBeNull();
+    expect(await until(async () => restarted === 1)).toBe(true);
+  } finally {
+    app.services.restart = undefined;
+    app.services.store.updateSettings({ mode: "live", liveEnabled: false, liveTerm: null });
   }
 });

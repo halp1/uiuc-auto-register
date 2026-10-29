@@ -1,8 +1,9 @@
 node_modules
 data
 .env
-.env.*
 .git
+.github
 .impeccable
 test
+docs
 *.log

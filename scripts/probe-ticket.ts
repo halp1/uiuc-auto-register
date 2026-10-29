@@ -1,23 +1,19 @@
-// User-run time ticket check (test mode only, strictly read-only).
+// User-run time ticket check (always Test mode, strictly read-only).
 //   bun run probe:ticket [term]        default: the active term, else Spring 2027
 // Logs in with the write interceptor blocking all writes, reads Prepare for Registration, and prints only
 // the parsed ticket dates. Page text is never printed or saved.
 
 import { Bus } from "../src/core/bus";
 import { systemClock } from "../src/core/clock";
-import { loadConfig } from "../src/core/config";
 import { Store } from "../src/core/db";
+import { probeSetup } from "./_probe";
 import { Events } from "../src/core/events";
 import { isTermCode, termLabel } from "../src/core/terms";
 import { BannerSessionManager } from "../src/banner/session";
 import { currentWindow } from "../src/banner/ticket";
 
-const config = loadConfig();
-if (config.mode !== "rehearsal") {
-  console.error("probe:ticket requires REGISTRATION_MODE=test");
-  process.exit(2);
-}
-const term = process.argv[2] ?? "120271";
+const { config, credentials, args } = probeSetup("probe:ticket");
+const term = args[0] ?? "120271";
 if (!isTermCode(term)) {
   console.error("Usage: bun run probe:ticket [term code]");
   process.exit(2);
@@ -28,7 +24,7 @@ const events = new Events(store, new Bus());
 events.onEvent(e => {
   if (e.kind === "login_stage" || e.kind === "session_error") console.log(`[${e.kind}] ${e.title}${e.detail ? `: ${e.detail}` : ""}`);
 });
-const manager = new BannerSessionManager({ config, events, store, clock: systemClock, settings: () => store.getSettings() });
+const manager = new BannerSessionManager({ config, events, store, clock: systemClock, settings: () => store.getSettings(), credentials: () => credentials });
 const show = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }) : "open ended";
 
