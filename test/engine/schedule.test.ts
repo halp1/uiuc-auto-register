@@ -67,7 +67,7 @@ describe("stats and sorting", () => {
       sec("3", [meeting("", null, null)], "1", 2),
       sec("4", [meeting("F", "13:00", "14:15")]),
     ]);
-    expect(stats).toEqual({ days: 3, start: "09:00", end: "14:15", gapMin: 70, closed: 1, minSeats: 0 });
+    expect(stats).toEqual({ days: 3, start: "09:00", end: "14:15", gapMin: 70, closed: 1, minSeats: 0, gpa: null });
   });
 
   test("overlapping meetings on one day do not create negative gaps", () => {
@@ -77,13 +77,13 @@ describe("stats and sorting", () => {
   const make = (key: string, stats: Partial<PlanSchedule["stats"]>): PlanSchedule => ({
     key,
     picks: [],
-    stats: { days: 3, start: "09:00", end: "15:00", gapMin: 60, closed: 0, minSeats: 5, ...stats },
+    stats: { days: 3, start: "09:00", end: "15:00", gapMin: 60, closed: 0, minSeats: 5, gpa: null, ...stats },
   });
   const list = [
-    make("a", { closed: 1, minSeats: 0, days: 2, start: "11:00", end: "13:00", gapMin: 0 }),
-    make("b", { closed: 0, minSeats: 2, days: 4, start: "08:00", end: "17:00", gapMin: 120 }),
-    make("c", { closed: 0, minSeats: 9, days: 3, start: "10:00", end: "14:00", gapMin: 30 }),
-    make("d", { closed: 0, minSeats: null, days: 3, start: "10:00", end: "14:00", gapMin: 10 }),
+    make("a", { closed: 1, minSeats: 0, days: 2, start: "11:00", end: "13:00", gapMin: 0, gpa: 3.1 }),
+    make("b", { closed: 0, minSeats: 2, days: 4, start: "08:00", end: "17:00", gapMin: 120, gpa: 3.6 }),
+    make("c", { closed: 0, minSeats: 9, days: 3, start: "10:00", end: "14:00", gapMin: 30, gpa: null }),
+    make("d", { closed: 0, minSeats: null, days: 3, start: "10:00", end: "14:00", gapMin: 10, gpa: 3.1 }),
   ];
   test.each([
     ["open", ["c", "b", "d", "a"]],
@@ -91,6 +91,7 @@ describe("stats and sorting", () => {
     ["start", ["a", "d", "c", "b"]],
     ["end", ["a", "d", "c", "b"]],
     ["gaps", ["a", "d", "c", "b"]],
+    ["gpa", ["b", "a", "d", "c"]],
   ] as [Parameters<typeof compareSchedules>[0], string[]][])("sort by %s", (sort, expected) => {
     expect([...list].sort(compareSchedules(sort)).map(s => s.key)).toEqual(expected);
   });
@@ -102,6 +103,8 @@ async function cs225(): Promise<CourseDetail> {
   return {
     ...parsed,
     sectionCount: parsed.sections.length,
+    gpa: null,
+    grades: null,
     sections: parsed.sections.map(section => ({ ...section, seats: null })),
     linkedOptions: { "59777": linked, "31208": linked },
   };
@@ -141,6 +144,15 @@ describe("generateSchedules", () => {
     expect(out.schedules.map(s => s.key)).toEqual(["11111,22222,33331", "11112,22222,33331"]);
     expect(out.schedules[0]!.picks.map(p => `${p.subject} ${p.crns.join("+")}`)).toEqual(["AAA 11111", "BBB 22222", "CCC 33331"]);
     expect(out.schedules[1]!.stats.closed).toBe(1);
+  });
+
+  test("gpa is the mean of picks with grade data and drives the gpa sort", () => {
+    const gpa: Record<string, number | null> = { "11111": 2.8, "11112": 3.6, "22222": 3.0, "33331": null };
+    const out = generateSchedules({ courses, sections, fixed: [], breaks: [], sort: "gpa", gpaOf: p => gpa[p.crns[0]!] ?? null });
+    expect(out.schedules.map(s => [s.key, s.stats.gpa])).toEqual([
+      ["11112,22222,33331", 3.3],
+      ["11111,22222,33331", 2.9],
+    ]);
   });
 
   test("openOnly keeps only schedules whose every section is known open", () => {

@@ -15,6 +15,7 @@ import type {
   WantedCourse,
 } from "../core/types";
 import { courseForCrn, getStoredSections, sectionsByCrn } from "../catalog/store";
+import { bundleGpa } from "../core/grades";
 import { backupBundles, breakHit, courseOptions, generateSchedules, planConflicts, sectionsConflict, type SchedSection } from "./schedule";
 
 export const SEAT_FRESH_MS = 10 * 60 * 1000;
@@ -154,6 +155,7 @@ export class PlanService {
     }
 
     const active = loaded.filter(entry => entry.status === "ok");
+    const gradesBy = new Map(active.map(entry => [courseKey(entry.course.subject, entry.course.number), entry.detail?.grades ?? null]));
     const output = generateSchedules({
       courses: active.map(entry => ({ subject: entry.course.subject, number: entry.course.number, options: entry.options })),
       sections: sched,
@@ -161,6 +163,10 @@ export class PlanService {
       breaks: plan.breaks,
       openOnly: plan.openOnly,
       sort: plan.sort,
+      gpaOf: pick => {
+        const grades = gradesBy.get(courseKey(pick.subject, pick.number));
+        return bundleGpa(grades, pick.crns.map(crn => sched.get(crn) ?? { meetings: [] }))?.gpa ?? null;
+      },
     });
     const viableBy = new Map(active.map((entry, index) => [entry.course.id, output.viable[index] ?? 0]));
 

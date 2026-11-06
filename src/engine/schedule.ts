@@ -115,7 +115,7 @@ export function scheduleStats(sections: SchedSection[]): PlanScheduleStats {
   }
   const hhmm = (value: number | null) =>
     value === null ? null : `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
-  return { days: byDay.size, start: hhmm(start), end: hhmm(end), gapMin, closed, minSeats };
+  return { days: byDay.size, start: hhmm(start), end: hhmm(end), gapMin, closed, minSeats, gpa: null };
 }
 
 const nullsLast = (a: number | null, b: number | null, dir: 1 | -1) => {
@@ -146,6 +146,9 @@ export function compareSchedules(sort: PlanSort) {
       case "gaps":
         primary = x.gapMin - y.gapMin;
         break;
+      case "gpa":
+        primary = nullsLast(x.gpa, y.gpa, -1);
+        break;
     }
     return primary || x.gapMin - y.gapMin || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
   };
@@ -163,6 +166,8 @@ export interface GenerateInput {
   breaks: PlanBreak[];
   openOnly?: boolean;
   sort?: PlanSort;
+  /** Expected GPA of one pick (grade data), null when unknown. The schedule's gpa is the mean of known picks. */
+  gpaOf?: (pick: PlanPick) => number | null;
   now?: () => number;
   maxSchedules?: number;
   budgetMs?: number;
@@ -260,10 +265,11 @@ export function generateSchedules(input: GenerateInput): GenerateOutput {
       crns: [...prepared[courseIndex]![optionIndex]!.crns],
     }));
     const all = choice.flatMap((optionIndex, courseIndex) => prepared[courseIndex]![optionIndex]!.sections);
+    const gpas = input.gpaOf ? picks.map(input.gpaOf).filter((gpa): gpa is number => gpa !== null) : [];
     return {
       key: picks.flatMap(pick => pick.crns).sort().join(","),
       picks,
-      stats: scheduleStats(all),
+      stats: { ...scheduleStats(all), gpa: gpas.length ? gpas.reduce((a, b) => a + b, 0) / gpas.length : null },
     };
   });
   schedules.sort(compareSchedules(input.sort ?? "open"));

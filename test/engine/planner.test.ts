@@ -36,6 +36,8 @@ async function cs225(): Promise<CourseDetail> {
   return {
     ...parsed,
     sectionCount: parsed.sections.length,
+    gpa: null,
+    grades: null,
     sections: parsed.sections.map(section => ({ ...section, seats: null })),
     linkedOptions: { "59777": linked, "31208": linked },
   };
@@ -82,6 +84,8 @@ describe("expandAny", () => {
     const course: CourseDetail = {
       ...parsed,
       sectionCount: parsed.sections.length,
+      gpa: null,
+      grades: null,
       sections: parsed.sections.map(section => ({ ...section, seats: null })),
       linkedOptions: {},
     };
