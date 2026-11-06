@@ -190,12 +190,14 @@ const genEdSeeds: [string, string, string, string, string[], string, string, str
   ["IB", "105", "Environmental Biology", "3", ["1LS"], "TR", "15:30", "16:45", "Allan, B", 12],
   ["ASTR", "100", "Introduction to Astronomy", "3", ["1PS"], "MWF", "14:00", "14:50", "Lee, Y", 40],
   ["RHET", "105", "Writing and Research", "4", ["1FC1"], "MWF", "08:00", "08:50", "Staff", 2],
+  ["AFRO", "224", "Black Arts and Humanities", "3", ["1LA", "1US"], "TR", "14:00", "15:15", "Hairston, E", 18],
   ["LING", "100", "Intro to Language Science", "3", ["1SS", "1NW", "1CLL"], "TR", "11:00", "12:15", "Shosted, R", 5],
 ];
 const genEdGpa: Record<string, number> = {
   "PHIL 101": 3.21, "HIST 172": 3.38, "AFRO 100": 3.62, "ASST 120": 3.55, "ENGL 119": 3.47, "MUS 130": 3.71, "ARTH 110": 3.29,
   "PSYC 100": 3.12, "ECON 102": 2.94, "ANTH 103": 3.58, "IB 105": 3.05, "ASTR 100": 3.41, "LING 100": 3.33,
 };
+const genEdPrereq: Record<string, string> = { "AFRO 224": "AFRO 100 or consent of instructor", "ENGL 119": "RHET 105", "ECON 102": "MATH 112 or consent of instructor", "LING 100": "One course in social science" };
 let genEdCrn = 70100;
 for (const [subject, number, title, credits, genEds, days, start, end, instructor, available] of genEdSeeds)
   courses.push({
@@ -203,7 +205,7 @@ for (const [subject, number, title, credits, genEds, days, start, end, instructo
     number,
     title,
     credits,
-    description: `${title}.`,
+    description: genEdPrereq[`${subject} ${number}`] ? `${title}. Prerequisite: ${genEdPrereq[`${subject} ${number}`]}.` : `${title}.`,
     sections: [[String(++genEdCrn), "A", "LEC", days, start, end, "Lincoln Hall", "1000", instructor, available, 120]],
     linked: {},
     genEds,
@@ -699,13 +701,16 @@ export async function mockRequest(method: string, path: string, body: any): Prom
     const any = url.searchParams.get("match") === "any";
     const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     const sort = url.searchParams.get("sort") ?? "gpa";
+    const noPrereq = url.searchParams.get("noPrereq") === "1";
     if (url.searchParams.get("term") !== TERM || codes.length === 0) return { hits: [], total: 0 };
     const hits: GenEdHit[] = [];
     for (const c of courses) {
       const matched = codes.filter(code => c.genEds?.includes(code));
       if (any ? matched.length === 0 : matched.length < codes.length) continue;
       if (q && !`${c.subject} ${c.number} ${c.title}`.toLowerCase().includes(q)) continue;
-      hits.push({ ...summary(c), matchedCrn: null, matchedInstructor: null, matched });
+      const prereq = /Prerequisites?: (.+?)\.?$/.exec(c.description)?.[1] ?? null;
+      if (noPrereq && prereq) continue;
+      hits.push({ ...summary(c), matchedCrn: null, matchedInstructor: null, matched, prereq });
     }
     const code = (h: GenEdHit) => `${h.subject} ${h.number.padStart(3, "0")}`;
     const byGpa = (a: GenEdHit, b: GenEdHit) => (b.gpa ?? -1) - (a.gpa ?? -1);

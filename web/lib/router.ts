@@ -8,7 +8,7 @@ export type RouteMatch =
   | { name: "plan"; id: number | null; guide: boolean }
   | { name: "setup"; step: string | null }
   | { name: "search"; q: string }
-  | { name: "geneds"; codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort }
+  | { name: "geneds"; codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort; noPrereq: boolean }
   | { name: "course"; term: string; subject: string; number: string }
   | { name: "activity" }
   | { name: "settings" }
@@ -83,6 +83,7 @@ export function match(href: string): RouteMatch {
       match: url.searchParams.get("match") === "any" ? "any" : "all",
       q: url.searchParams.get("q") ?? "",
       sort: sort === "matched" || sort === "code" ? sort : "gpa",
+      noPrereq: url.searchParams.get("prereq") === "none",
     };
   }
   if (parts[0] === "course" && parts.length === 4)
@@ -106,12 +107,13 @@ export function coursePath(term: string, subject: string, number: string) {
 }
 
 /** /geneds URL with defaults left out. */
-export function genEdsPath(o: { codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort }) {
+export function genEdsPath(o: { codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort; noPrereq: boolean }) {
   const params = new URLSearchParams();
   if (o.codes.length) params.set("req", o.codes.join(","));
   if (o.match !== "all") params.set("match", o.match);
   if (o.q.trim()) params.set("q", o.q.trim());
   if (o.sort !== "gpa") params.set("sort", o.sort);
+  if (o.noPrereq) params.set("prereq", "none");
   const qs = params.toString().replace(/%2C/g, ",");
   return `/geneds${qs ? `?${qs}` : ""}`;
 }

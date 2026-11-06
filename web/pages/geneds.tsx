@@ -1,4 +1,4 @@
-import { ChevronRight, Ellipsis, ExternalLink, Plus, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronRight, Ellipsis, ExternalLink, Plus, RefreshCw, Search } from "lucide-react";
 import { DropdownMenu as DM } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
 import { genEdGroups } from "../../src/core/gened";
@@ -43,7 +43,7 @@ export function GenEdsPage({ route }: { route: Route }) {
   const term = useStore(s => s.settings?.activeTerm ?? null);
   const terms = useStore(s => s.terms);
   const catalog = useStore(s => s.status!.catalog);
-  const { codes, match, sort } = route;
+  const { codes, match, sort, noPrereq } = route;
   const [q, setQ] = useState(route.q);
   const [result, setResult] = useState<{ hits: GenEdHit[]; total: number } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -52,8 +52,8 @@ export function GenEdsPage({ route }: { route: Route }) {
   const [syncError, setSyncError] = useState<string | null>(null);
   const query = q.trim();
 
-  const go = (patch: Partial<{ codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort }>) =>
-    navigate(genEdsPath({ codes, match, q: query, sort, ...patch }), { replace: true });
+  const go = (patch: Partial<{ codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort; noPrereq: boolean }>) =>
+    navigate(genEdsPath({ codes, match, q: query, sort, noPrereq, ...patch }), { replace: true });
 
   useEffect(() => {
     if (query !== route.q.trim()) go({ q: query });
@@ -72,7 +72,7 @@ export function GenEdsPage({ route }: { route: Route }) {
     const controller = new AbortController();
     const id = setTimeout(async () => {
       try {
-        const res = await api.genEds(term, { codes, match, q: query, sort }, controller.signal);
+        const res = await api.genEds(term, { codes, match, q: query, sort, noPrereq }, controller.signal);
         if (controller.signal.aborted) return;
         setResult(res);
         setError(null);
@@ -87,7 +87,7 @@ export function GenEdsPage({ route }: { route: Route }) {
       clearTimeout(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [term, key, match, query, sort, catalog.syncedAt]);
+  }, [term, key, match, query, sort, noPrereq, catalog.syncedAt]);
 
   async function sync() {
     if (!term) return;
@@ -177,6 +177,10 @@ export function GenEdsPage({ route }: { route: Route }) {
               className="h-9 w-full rounded-md border border-border-strong bg-surface-2 pl-9 pr-3 text-sm text-fg placeholder:text-placeholder transition-[border-color,box-shadow] duration-150 ease-out hover:border-border-hover focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 [&::-webkit-search-cancel-button]:hidden"
             />
           </div>
+          <FilterChip active={noPrereq} onClick={() => go({ noPrereq: !noPrereq })} className="h-9 px-3">
+            {noPrereq && <Check aria-hidden />}
+            No prerequisites
+          </FilterChip>
           <Select aria-label="Sort" className="w-48" value={sort} onValueChange={v => go({ sort: v as GenEdSort })} options={SORTS} />
         </div>
       )}
@@ -235,6 +239,11 @@ function HitRow({ hit, term }: { hit: GenEdHit; term: string }) {
       <span className="min-w-0">
         <span className="block truncate text-sm">{hit.title}</span>
         <GenEdPills codes={hit.genEds} matched={hit.matched} className="mt-1" />
+        {hit.prereq && (
+          <span className="mt-1 block truncate text-xs text-fg-muted" title={`Prerequisite: ${hit.prereq}`}>
+            Prerequisite: {hit.prereq}
+          </span>
+        )}
       </span>
       <span className="hidden text-[0.8125rem] text-fg-muted tabular-nums sm:block">{hit.creditHours ? `${hit.creditHours} hrs` : ""}</span>
       <span className="relative z-10 hidden sm:block">

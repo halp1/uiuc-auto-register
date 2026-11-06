@@ -112,12 +112,12 @@ export const api = {
   syncCatalog: (term: string) => request<{ ok: true }>("POST", "/api/catalog/sync", { term }),
   genEds: (
     term: string,
-    o: { codes: string[]; match: "all" | "any"; q: string; sort: "gpa" | "matched" | "code" },
+    o: { codes: string[]; match: "all" | "any"; q: string; sort: "gpa" | "matched" | "code"; noPrereq: boolean },
     signal?: AbortSignal,
   ) =>
     request<{ hits: GenEdHit[]; total: number }>(
       "GET",
-      `/api/geneds?term=${enc(term)}&codes=${enc(o.codes.join(","))}&match=${o.match}&q=${enc(o.q)}&sort=${o.sort}`,
+      `/api/geneds?term=${enc(term)}&codes=${enc(o.codes.join(","))}&match=${o.match}&q=${enc(o.q)}&sort=${o.sort}${o.noPrereq ? "&noPrereq=1" : ""}`,
       undefined,
       signal,
     ),
