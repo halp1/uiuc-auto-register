@@ -1,7 +1,10 @@
 import { ArrowDown, ArrowUp, ChevronLeft, Link2, Lock, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { AnyFilters, CourseDetail, Day, Section, SeatInfo, TimeRange, WantedCourse } from "../../src/core/types";
+import { genEdReq, genEdShort } from "../../src/core/gened";
+import { instructorGrades, instructorKey, sectionInstructors } from "../../src/core/grades";
+import type { AnyFilters, CourseDetail, CourseGrades, Day, Section, SeatInfo, TimeRange, WantedCourse } from "../../src/core/types";
 import { CourseState, SeatCount } from "@/components/data";
+import { GpaBadge, GradeDisparity } from "@/components/grades";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -252,6 +255,11 @@ function CourseEditor({ detail, back }: { detail: CourseDetail; back: React.Reac
     [detail],
   );
 
+  const teaching = useMemo(
+    () => new Set(detail.sections.flatMap(sectionInstructors).map(instructorKey).filter(Boolean)),
+    [detail],
+  );
+
   const canSave =
     !saving && (wanted ? dirty : draft.kind === "any" ? anyMatches.length > 0 : draft.bundles.length > 0);
 
@@ -331,6 +339,11 @@ function CourseEditor({ detail, back }: { detail: CourseDetail; back: React.Reac
           <Badge variant="muted" className="tabular-nums">
             {detail.sections.length} sections
           </Badge>
+          {detail.genEds.map(code => (
+            <Badge key={code} variant="outline" title={genEdReq(code)?.categoryLabel}>
+              {genEdShort(code)}
+            </Badge>
+          ))}
         </div>
         {detail.scheduleInfo && <p className="max-w-[70ch] text-[0.8125rem] text-fg-muted">{detail.scheduleInfo}</p>}
       </header>
@@ -348,10 +361,19 @@ function CourseEditor({ detail, back }: { detail: CourseDetail; back: React.Reac
               linkedKeys={linkedKeys}
               onToggle={toggle}
               seatOf={seatOf}
+              grades={detail.grades}
               dimmed={draft.kind === "any" ? (s: Section) => !sectionPasses(s, draft.filters) : undefined}
               disabled={draft.kind === "any"}
             />
           ))}
+          {detail.grades && (
+            <section aria-labelledby="grades-title" className="flex flex-col gap-2.5">
+              <h2 id="grades-title" className="text-sm font-semibold">
+                Grades by instructor
+              </h2>
+              <GradeDisparity grades={detail.grades} teaching={teaching} />
+            </section>
+          )}
         </div>
 
         <Card className="xl:sticky xl:top-20">
@@ -431,6 +453,7 @@ function CourseEditor({ detail, back }: { detail: CourseDetail; back: React.Reac
               <AnyFiltersEditor
                 filters={draft.filters}
                 instructors={instructors}
+                grades={detail.grades}
                 matches={anyMatches.length}
                 onChange={filters => setDraft(d => ({ ...d, filters }))}
               />
@@ -557,6 +580,7 @@ function SectionTable({
   linkedKeys,
   onToggle,
   seatOf,
+  grades,
   dimmed,
   disabled,
 }: {
@@ -568,6 +592,7 @@ function SectionTable({
   linkedKeys: string[];
   onToggle: (crn: string) => void;
   seatOf: (crn: string) => SeatInfo | null;
+  grades: CourseGrades | null;
   dimmed?: (s: Section) => boolean;
   disabled?: boolean;
 }) {
@@ -618,7 +643,7 @@ function SectionTable({
                   key={s.crn}
                   onClick={e => {
                     if (disabled) return;
-                    if ((e.target as HTMLElement).closest("button")) return;
+                    if ((e.target as HTMLElement).closest("button,[data-gpa]")) return;
                     onToggle(s.crn);
                   }}
                   className={cn(
@@ -674,8 +699,8 @@ function SectionTable({
                       </span>
                     ))}
                   </td>
-                  <td className="hidden max-w-44 px-3 text-fg-muted lg:table-cell">
-                    <span className="block truncate">{[...new Set(s.meetings.flatMap(mt => mt.instructors))].join(", ") || "Staff"}</span>
+                  <td className="hidden max-w-56 px-3 text-fg-muted lg:table-cell">
+                    <InstructorCell names={sectionInstructors(s)} grades={grades} />
                   </td>
                   <td className="pr-4 pl-3 text-right">
                     <SeatCount seat={seatOf(s.crn)} className="justify-end" />
@@ -690,14 +715,33 @@ function SectionTable({
   );
 }
 
+function InstructorCell({ names, grades }: { names: string[]; grades: CourseGrades | null }) {
+  const real = names.filter(Boolean);
+  if (real.length === 0) return <span className="block truncate">Staff</span>;
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5">
+      {real.map(name => (
+        <span key={name} className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate">{name}</span>
+          <span data-gpa className="contents">
+            <GpaBadge row={instructorGrades(grades, [name])[0]} />
+          </span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function AnyFiltersEditor({
   filters,
   instructors,
+  grades,
   matches,
   onChange,
 }: {
   filters: AnyFilters;
   instructors: string[];
+  grades: CourseGrades | null;
   matches: number;
   onChange: (f: AnyFilters) => void;
 }) {
@@ -778,12 +822,21 @@ function AnyFiltersEditor({
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-2 text-[0.8125rem] font-medium">Exclude instructors</legend>
           <div className="flex flex-wrap gap-1.5">
-            {instructors.map(name => (
-              <FilterChip key={name} active={filters.excludeInstructors.includes(name)} onClick={() => toggleInstructor(name)}>
-                {filters.excludeInstructors.includes(name) && <X aria-hidden />}
-                {name}
-              </FilterChip>
-            ))}
+            {instructors.map(name => {
+              const row = instructorGrades(grades, [name])[0];
+              return (
+                <FilterChip key={name} active={filters.excludeInstructors.includes(name)} onClick={() => toggleInstructor(name)}>
+                  {filters.excludeInstructors.includes(name) && <X aria-hidden />}
+                  {name}
+                  {row && (
+                    <span className="font-mono text-[0.6875rem] text-fg-subtle tabular-nums">
+                      <span className="sr-only">GPA </span>
+                      {row.avg.toFixed(2)}
+                    </span>
+                  )}
+                </FilterChip>
+              );
+            })}
           </div>
         </fieldset>
       )}

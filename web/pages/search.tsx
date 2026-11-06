@@ -1,6 +1,7 @@
 import { ChevronRight, RefreshCw, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { SearchHit } from "../../src/core/types";
+import { CourseGpa, GenEdPills } from "@/components/grades";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/input";
 import { InlineError, PageHeader } from "@/components/ui/list";
@@ -179,7 +180,7 @@ export function SearchPage({ initialQuery }: { initialQuery: string }) {
                   onMouseEnter={() => setActive(i)}
                   tabIndex={-1}
                   className={cn(
-                    "grid min-h-14 grid-cols-[96px_minmax(0,1fr)_auto] items-center gap-4 px-4 py-3 transition-colors duration-150 ease-out sm:grid-cols-[110px_minmax(0,1fr)_auto_auto_auto]",
+                    "grid min-h-14 grid-cols-[96px_minmax(0,1fr)_auto] items-center gap-4 px-4 py-3 transition-colors duration-150 ease-out sm:grid-cols-[110px_minmax(0,1fr)_auto_auto_44px_auto]",
                     i === active && "bg-hover",
                   )}
                 >
@@ -199,6 +200,7 @@ export function SearchPage({ initialQuery }: { initialQuery: string }) {
                         )}
                       </span>
                     )}
+                    <GenEdPills codes={hit.genEds} className="mt-1" />
                   </span>
                   <span className="hidden text-[0.8125rem] text-fg-muted tabular-nums sm:block">
                     {hit.creditHours ? `${hit.creditHours} hrs` : ""}
@@ -206,6 +208,7 @@ export function SearchPage({ initialQuery }: { initialQuery: string }) {
                   <span className="hidden text-[0.8125rem] text-fg-muted tabular-nums sm:block">
                     {hit.sectionCount} {hit.sectionCount === 1 ? "section" : "sections"}
                   </span>
+                  <CourseGpa gpa={hit.gpa} className="hidden text-right sm:block" />
                   <ChevronRight className="size-4 text-fg-subtle" aria-hidden />
                 </a>
               </li>

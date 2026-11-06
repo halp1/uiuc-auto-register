@@ -1,5 +1,6 @@
 import {
   Check,
+  ChevronDown,
   ChevronsUpDown,
   Crosshair,
   Ellipsis,
@@ -28,7 +29,9 @@ import type {
   PlanSort,
   SearchHit,
 } from "../../src/core/types";
+import { bundleGpa, instructorGrades, instructorKey, sectionInstructors } from "../../src/core/grades";
 import { ConfirmDialog } from "@/components/confirm";
+import { GpaBadge, GradeDisparity, gpaText } from "@/components/grades";
 import { SeatCount } from "@/components/data";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -80,6 +83,7 @@ const SORTS: { value: PlanSort; label: string }[] = [
   { value: "start", label: "Latest start" },
   { value: "end", label: "Earliest end" },
   { value: "gaps", label: "Fewest gaps" },
+  { value: "gpa", label: "Easiest grades" },
 ];
 
 const HALF_HOURS = Array.from({ length: 31 }, (_, i) => {
@@ -1001,6 +1005,16 @@ function SectionsSheet({
   }, [detail]);
 
   const label = (crn: string) => detail?.sections.find(s => s.crn === crn)?.section ?? crn;
+  const [gradesOpen, setGradesOpen] = useState(false);
+  const teaching = useMemo(
+    () => new Set((detail?.sections ?? []).flatMap(sectionInstructors).map(instructorKey).filter(Boolean)),
+    [detail],
+  );
+  const comboGpa = (combo: string[]) =>
+    bundleGpa(
+      detail?.grades,
+      combo.map(c => detail?.sections.find(s => s.crn === c)).filter((s): s is NonNullable<typeof s> => !!s),
+    );
 
   return (
     <Sheet open={!!course} onOpenChange={o => !o && onClose()}>
@@ -1025,6 +1039,31 @@ function SectionsSheet({
               )}
               {detail && (
                 <>
+                  {detail.grades && (
+                    <section className="flex flex-col gap-2">
+                      <button
+                        type="button"
+                        aria-expanded={gradesOpen}
+                        aria-controls="sheet-grades"
+                        onClick={() => setGradesOpen(o => !o)}
+                        className="flex items-center gap-2 rounded text-left text-[0.8125rem] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      >
+                        <ChevronDown
+                          aria-hidden
+                          className={cn("size-4 text-fg-muted transition-transform duration-150", !gradesOpen && "-rotate-90")}
+                        />
+                        Grades by instructor
+                        <span className="ml-auto font-mono text-xs font-normal text-fg-muted tabular-nums">
+                          Avg {gpaText(detail.grades.overall.avg)}
+                        </span>
+                      </button>
+                      {gradesOpen && (
+                        <div id="sheet-grades">
+                          <GradeDisparity grades={detail.grades} teaching={teaching} />
+                        </div>
+                      )}
+                    </section>
+                  )}
                   <section aria-labelledby="lock-title" className="flex flex-col gap-2">
                     <h3 id="lock-title" className="text-[0.8125rem] font-semibold">
                       Lock to one bundle
@@ -1040,6 +1079,7 @@ function SectionsSheet({
                       </FilterChip>
                       {combos.map(combo => {
                         const on = course.locked?.join() === combo.join();
+                        const g = comboGpa(combo);
                         return (
                           <FilterChip
                             key={combo.join()}
@@ -1051,6 +1091,12 @@ function SectionsSheet({
                           >
                             {on && <Lock aria-hidden />}
                             {combo.map(label).join(" + ")}
+                            {g && (
+                              <span className="text-[0.6875rem] text-fg-subtle tabular-nums">
+                                <span className="sr-only">{g.source === "course" ? "Course GPA " : "GPA "}</span>
+                                {gpaText(g.gpa)}
+                              </span>
+                            )}
                           </FilterChip>
                         );
                       })}
@@ -1064,6 +1110,9 @@ function SectionsSheet({
                       {detail.sections.map(s => {
                         const allowed = !course.excludedCrns.includes(s.crn);
                         const m = s.meetings[0];
+                        const names = sectionInstructors(s).filter(Boolean);
+                        const row = instructorGrades(detail.grades, names)[0];
+                        const last = names[0]?.split(",")[0];
                         return (
                           <li key={s.crn}>
                             <label className="flex cursor-pointer items-center gap-3 bg-black px-3 py-2.5 transition-colors duration-150 hover:bg-hover">
@@ -1081,6 +1130,12 @@ function SectionsSheet({
                               <span className="min-w-0 flex-1 text-xs text-fg-muted">
                                 <span className="font-mono">{m?.days || "TBA"}</span>{" "}
                                 {m?.start && m.end ? timeRange(m.start, m.end) : "Arranged"}
+                                {last && last !== "Staff" && (
+                                  <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                                    <span className="truncate">{last}</span>
+                                    <GpaBadge row={row} />
+                                  </span>
+                                )}
                               </span>
                               <SeatCount seat={storeSeats[seatKey(plan.term, s.crn)] ?? s.seats} className="[&_.font-mono]:text-xs" />
                             </label>
@@ -1248,6 +1303,7 @@ function Results({
                     </span>
                     <span>{s.stats.days} days</span>
                     {s.stats.start && s.stats.end && <span>{timeRange(s.stats.start, s.stats.end)}</span>}
+                    {s.stats.gpa != null && <span className="font-mono">GPA {gpaText(s.stats.gpa)}</span>}
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-1">
@@ -1322,7 +1378,10 @@ function sectionBlocks(sec: PlanSection, kind: Block["kind"], color?: string): B
         color,
         title: `${sec.subject} ${sec.number}`,
         sub: `${sec.section} ${m.type}`,
-        detail: [m.room, m.building].filter(Boolean).join(" ") || undefined,
+        detail:
+          [[m.room, m.building].filter(Boolean).join(" "), m.instructors.filter(i => i && i !== "Staff").join(", ")]
+            .filter(Boolean)
+            .join("\n") || undefined,
       });
     }
   });
@@ -1561,7 +1620,7 @@ function CalendarBlock({ block: b, lo }: { block: Block; lo: number }) {
     >
       <span className="block truncate font-mono font-medium">{b.title}</span>
       {h > 30 && <span className="block truncate font-mono opacity-80">{b.sub}</span>}
-      {h > 58 && b.detail && <span className="block truncate text-fg-muted">{b.detail}</span>}
+      {h > 58 && b.detail && <span className="block truncate text-fg-muted">{b.detail.split("\n")[0]}</span>}
     </div>
   );
 }
