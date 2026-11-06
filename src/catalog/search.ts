@@ -6,6 +6,7 @@ import type { CourseDetail, GenEdHit, Meeting, SearchHit, Section } from "../cor
 import type { LinkedSections } from "../banner/linked";
 import type { Explorer } from "./explorer";
 import { getCourseGrades } from "./grades";
+import { resolvePrereq } from "./prereq";
 import { getStoredCourse, getStoredSections, saveCourses, storedLinkedOptions } from "./store";
 
 type Row = Record<string, any>;
@@ -225,6 +226,8 @@ export interface GenEdQuery {
   match?: "all" | "any";
   q?: string;
   sort?: "gpa" | "matched" | "code";
+  /** Only courses with no listed prerequisite. Courses whose cross-listed source is unknown are left out. */
+  noPrereq?: boolean;
   limit?: number;
 }
 
@@ -267,13 +270,21 @@ export function genEdSearch(store: Store, term: string, query: GenEdQuery): { hi
        ORDER BY ${order}`,
     )
     .all(...params) as Row[];
+  const describe = store.db.query("SELECT description FROM cat_courses WHERE term = ? AND subject = ? AND number = ?");
+  const lookup = (subject: string, number: string) => {
+    const found = describe.get(term, subject, number) as Row | null;
+    return found ? ((found.description as string | null) ?? "") : undefined;
+  };
+  const withPrereq = rows.map(row => ({ row, prereq: resolvePrereq(row.description, lookup) }));
+  const kept = query.noPrereq ? withPrereq.filter(entry => entry.prereq === null) : withPrereq;
   return {
-    total: rows.length,
-    hits: rows.slice(0, limit).map(row => ({
+    total: kept.length,
+    hits: kept.slice(0, limit).map(({ row, prereq }) => ({
       ...summaryFromRow(row),
       matchedCrn: null,
       matchedInstructor: null,
       matched: String(row.matched ?? "").split(",").filter(Boolean).sort(),
+      prereq: prereq ?? null,
     })),
   };
 }

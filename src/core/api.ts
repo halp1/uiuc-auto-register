@@ -39,7 +39,8 @@ export interface Api {
   "GET /api/course/:term/:subject/:number": { res: CourseDetail }; // includes live seats fetched on demand
   "POST /api/catalog/sync": { body: { term: string }; res: { ok: true } };
   // codes: comma separated gen ed codes from GENED_REQS. match all (default) or any. sort gpa (default), matched, code.
-  "GET /api/geneds?term&codes&match&q&sort": { res: { hits: GenEdHit[]; total: number } };
+  // noPrereq=1 keeps only courses whose catalog entry lists no prerequisite (following "See X 123" cross-lists).
+  "GET /api/geneds?term&codes&match&q&sort&noPrereq": { res: { hits: GenEdHit[]; total: number } };
   "POST /api/grades/sync": { res: { ok: true; courses: number } };
 
   // watchlist

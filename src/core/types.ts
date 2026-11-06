@@ -393,6 +393,7 @@ export interface CourseGrades {
 
 export interface GenEdHit extends SearchHit {
   matched: string[]; // which of the requested codes this course carries
+  prereq: string | null; // prerequisite text from the catalog, null when the course lists none
 }
 
 export interface SearchHit extends CourseSummary {

@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { Store } from "../../src/core/db";
 import { Explorer, parseCascade, parseCourseDetail, parseSubjects, to24h } from "../../src/catalog/explorer";
 import { parseGradeData, replaceGrades } from "../../src/catalog/grades";
+import { parsePrereq } from "../../src/catalog/prereq";
 import { courseDetail, genEdSearch, search } from "../../src/catalog/search";
 import { replaceSubject, saveCourses } from "../../src/catalog/store";
 import { CatalogSync, cleanTermDescription, parseTerms } from "../../src/catalog/sync";
@@ -101,6 +102,32 @@ describe("gen eds", () => {
     expect(hit.genEds).toEqual(["1SS", "1US"]);
     expect(hit.gpa).toBeCloseTo(3.53, 2);
     expect(search(store, T, "aas 105")[0]!.gpa).toBeNull();
+  });
+
+  test("no prerequisite filter drops AFRO 224 and cross-lists whose source is unknown", async () => {
+    const local = new Store(":memory:");
+    saveCourses(local, [
+      ...parseCascade(await fixture("explorer-aas-cascade-gened.xml"), T),
+      ...parseCascade(await fixture("explorer-afro-cascade-prereq.xml"), T),
+    ]);
+    const all = genEdSearch(local, T, { codes: ["1US"], sort: "code" }).hits;
+    expect(all.find(h => h.number === "224")?.prereq).toBe("AFRO 100 or consent of instructor");
+    const open = genEdSearch(local, T, { codes: ["1US"], sort: "code", noPrereq: true });
+    // AFRO 134 is "See REL 134" and AAS 201 is "See PS 201": neither source is stored, so both are left out.
+    expect(open.hits.map(h => `${h.subject} ${h.number}`)).toEqual(["AAS 100", "AAS 105", "AAS 200", "AFRO 100"]);
+    expect(open.total).toBe(4);
+  });
+
+  test.each([
+    ["Intro course. Prerequisite: AFRO 100 or consent of instructor.", { kind: "some", text: "AFRO 100 or consent of instructor" }],
+    ["Lab. Prerequisites: CHEM 102 and CHEM 103.", { kind: "some", text: "CHEM 102 and CHEM 103" }],
+    ["Credit or concurrent registration required. Corequisite: MATH 220.", { kind: "some", text: "MATH 220" }],
+    ["Survey of the field. Prerequisite: None.", { kind: "none" }],
+    ["Survey of the field.", { kind: "none" }],
+    ["Same as REL 134. See REL 134.", { kind: "see", subject: "REL", number: "134" }],
+    [null, { kind: "none" }],
+  ])("parsePrereq(%p)", (description, expected) => {
+    expect(parsePrereq(description)).toEqual(expected as ReturnType<typeof parsePrereq>);
   });
 
   test("resaving a subject drops gen eds of removed courses", async () => {

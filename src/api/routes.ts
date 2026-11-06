@@ -464,7 +464,8 @@ export function apiRoutes(s: AppServices) {
         const sort = url.searchParams.get("sort") ?? "gpa";
         if (sort !== "gpa" && sort !== "matched" && sort !== "code") throw new HttpError(400, "Sort must be gpa, matched, or code.");
         const q = (url.searchParams.get("q") ?? "").trim().slice(0, 100);
-        return json(s.genEdSearch(term, { codes, match, sort, q }));
+        const noPrereq = url.searchParams.get("noPrereq") === "1";
+        return json(s.genEdSearch(term, { codes, match, sort, q, noPrereq }));
       },
     },
     "/api/grades/sync": {
