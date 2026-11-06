@@ -8,6 +8,7 @@ import { linkClick, hrefWithMock, navigate, useRoute } from "@/lib/router";
 import { reload, useStore } from "@/lib/store";
 import { ActivityPage } from "@/pages/activity";
 import { CoursePage } from "@/pages/course";
+import { GenEdsPage } from "@/pages/geneds";
 import { OverviewPage } from "@/pages/overview";
 import { PlanPage } from "@/pages/plan";
 import { SearchPage } from "@/pages/search";
@@ -112,6 +113,9 @@ function AuthedApp() {
         break;
       case "search":
         page = <SearchPage initialQuery={route.q} />;
+        break;
+      case "geneds":
+        page = <GenEdsPage route={route} />;
         break;
       case "course":
         page = <CoursePage key={`${route.term}/${route.subject}/${route.number}`} term={route.term} subject={route.subject} number={route.number} />;

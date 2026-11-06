@@ -10,6 +10,7 @@ const server = Bun.serve({
     "/setup": index,
     "/setup/*": index,
     "/search": index,
+    "/geneds": index,
     "/course/*": index,
     "/activity": index,
     "/settings": index,

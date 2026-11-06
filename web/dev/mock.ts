@@ -1,5 +1,6 @@
 // Fake backend used only when the URL has ?mock=1. Never imported otherwise.
 import type { RehearsalReport } from "../../src/core/contracts";
+import { bundleGpa, instructorKey } from "../../src/core/grades";
 import {
   NOTIFY_EVENTS,
   type AppEvent,
@@ -9,6 +10,9 @@ import {
   type Approval,
   type Bundle,
   type CourseDetail,
+  type CourseGrades,
+  type GenEdHit,
+  type InstructorGrades,
   type Meeting,
   type Day,
   type Plan,
@@ -24,6 +28,7 @@ import {
   type SeatInfo,
   type Section,
   type Snapshot,
+  type CourseSummary,
   type StreamMessage,
   type SystemStatus,
   type WantedCourse,
@@ -51,6 +56,7 @@ interface CourseSeed {
   description: string;
   sections: SectionSeed[];
   linked: Record<string, string[][]>;
+  genEds?: string[];
 }
 
 const courses: CourseSeed[] = [
@@ -63,17 +69,18 @@ const courses: CourseSeed[] = [
       "Data abstractions: elementary data structures (lists, stacks, queues, and trees) and their implementation using an object-oriented programming language.",
     sections: [
       ["31208", "AL1", "LEC", "MWF", "10:00", "10:50", "Lincoln Hall", "Theater", "Evans, G", 3, 400],
-      ["31209", "AL2", "LEC", "MWF", "14:00", "14:50", "Foellinger Auditorium", "", "Fagen-Ulmschneider, W", 0, 450],
+      ["31209", "AL2", "LEC", "MWF", "14:00", "14:50", "Foellinger Auditorium", "", "Solomon, B", 0, 450],
       ["31232", "AYA", "LBD", "W", "08:00", "09:50", "Siebel Center", "0218", "Evans, G", 0, 24],
       ["31233", "AYB", "LBD", "W", "10:00", "11:50", "Siebel Center", "0218", "Evans, G", 0, 24],
       ["31234", "AYC", "LBD", "W", "12:00", "13:50", "Siebel Center", "0220", "Evans, G", 2, 24],
-      ["31235", "AYD", "LBD", "R", "16:00", "17:50", "Siebel Center", "0220", "Fagen-Ulmschneider, W", 1, 24],
-      ["31236", "AYE", "LBD", "R", "18:00", "19:50", "Siebel Center", "0222", "Fagen-Ulmschneider, W", 0, 24],
+      ["31235", "AYD", "LBD", "R", "16:00", "17:50", "Siebel Center", "0220", "Solomon, B", 1, 24],
+      ["31236", "AYE", "LBD", "R", "18:00", "19:50", "Siebel Center", "0222", "Solomon, B", 0, 24],
     ],
     linked: {
       "31208": [["31232"], ["31233"], ["31234"]],
       "31209": [["31235"], ["31236"]],
     },
+    genEds: ["1QR2"],
   },
   {
     subject: "CS",
@@ -96,11 +103,13 @@ const courses: CourseSeed[] = [
     credits: "4",
     description: "Third course in calculus and analytic geometry including vector analysis.",
     sections: [
-      ["58423", "BL1", "LEC", "MWF", "11:00", "11:50", "Altgeld Hall", "314", "Kirkpatrick, K", 12, 200],
+      ["58423", "BL1", "LEC", "MWF", "11:00", "11:50", "Altgeld Hall", "314", "Rezk, C", 12, 200],
+      ["58424", "BL2", "LEC", "MWF", "13:00", "13:50", "Altgeld Hall", "314", "Sowers, R", 30, 200],
       ["58431", "BDA", "DIS", "TR", "08:00", "08:50", "Altgeld Hall", "143", "Staff", 4, 30],
       ["58432", "BDB", "DIS", "TR", "09:00", "09:50", "Altgeld Hall", "143", "Staff", 0, 30],
     ],
-    linked: { "58423": [["58431"], ["58432"]] },
+    linked: { "58423": [["58431"], ["58432"]], "58424": [["58431"], ["58432"]] },
+    genEds: ["1QR2"],
   },
   {
     subject: "STAT",
@@ -110,6 +119,7 @@ const courses: CourseSeed[] = [
     description: "Introduction to mathematical statistics.",
     sections: [["40121", "X1", "LEC", "TR", "12:30", "13:45", "Lincoln Hall", "1092", "Stepanov, A", 0, 120]],
     linked: {},
+    genEds: ["1QR2"],
   },
   {
     subject: "CS",
@@ -164,6 +174,110 @@ const courses: CourseSeed[] = [
     linked: { "31244": [["31246"]] },
   },
 ];
+
+// Single section gen ed courses for the gen ed finder: [subject, number, title, credits, genEds, days, start, end, instructor, available]
+const genEdSeeds: [string, string, string, string, string[], string, string, string, string, number][] = [
+  ["PHIL", "101", "Intro to Philosophy", "3", ["1HP", "1WCC"], "TR", "11:00", "12:15", "Weinberg, J", 14],
+  ["HIST", "172", "US Hist Since 1877", "3", ["1HP", "1US"], "MW", "13:00", "14:20", "Hoganson, K", 6],
+  ["AFRO", "100", "Intro to African American St", "3", ["1HP", "1US", "1SS"], "TR", "14:00", "15:20", "Brown, K", 22],
+  ["ASST", "120", "Intro to Asian Studies", "3", ["1HP", "1NW"], "MWF", "10:00", "10:50", "Liu, S", 0],
+  ["ENGL", "119", "Literature and Film", "3", ["1LA", "1US"], "MW", "15:00", "16:20", "Hansen, J", 9],
+  ["MUS", "130", "Intro to World Music", "3", ["1LA", "1NW"], "TR", "09:30", "10:45", "Hoyt, A", 31],
+  ["ARTH", "110", "Intro to Art", "3", ["1LA", "1WCC"], "MWF", "12:00", "12:50", "Baker, R", 3],
+  ["PSYC", "100", "Intro Psych", "4", ["1BSC", "1SS"], "MWF", "09:00", "09:50", "Bogdan, T", 48],
+  ["ECON", "102", "Microeconomic Principles", "3", ["1SS"], "TR", "12:30", "13:45", "Kahn, L", 0],
+  ["ANTH", "103", "Anthro in a Changing World", "3", ["1SS", "1NW"], "MW", "11:00", "12:20", "Nelson, K", 17],
+  ["IB", "105", "Environmental Biology", "3", ["1LS"], "TR", "15:30", "16:45", "Allan, B", 12],
+  ["ASTR", "100", "Introduction to Astronomy", "3", ["1PS"], "MWF", "14:00", "14:50", "Lee, Y", 40],
+  ["RHET", "105", "Writing and Research", "4", ["1FC1"], "MWF", "08:00", "08:50", "Staff", 2],
+  ["LING", "100", "Intro to Language Science", "3", ["1SS", "1NW", "1CLL"], "TR", "11:00", "12:15", "Shosted, R", 5],
+];
+const genEdGpa: Record<string, number> = {
+  "PHIL 101": 3.21, "HIST 172": 3.38, "AFRO 100": 3.62, "ASST 120": 3.55, "ENGL 119": 3.47, "MUS 130": 3.71, "ARTH 110": 3.29,
+  "PSYC 100": 3.12, "ECON 102": 2.94, "ANTH 103": 3.58, "IB 105": 3.05, "ASTR 100": 3.41, "LING 100": 3.33,
+};
+let genEdCrn = 70100;
+for (const [subject, number, title, credits, genEds, days, start, end, instructor, available] of genEdSeeds)
+  courses.push({
+    subject,
+    number,
+    title,
+    credits,
+    description: `${title}.`,
+    sections: [[String(++genEdCrn), "A", "LEC", days, start, end, "Lincoln Hall", "1000", instructor, available, 120]],
+    linked: {},
+    genEds,
+  });
+
+// ---------- grades (waf grade disparity shaped) ----------
+
+function gradeRow(name: string, avg: number, students: number, sigma: number | null, sections: number, spread = 1): InstructorGrades {
+  const c = (v: number) => Math.round(Math.max(0, Math.min(4, v)) * 100) / 100;
+  const a = Math.max(0.08, Math.min(0.85, 0.12 + (avg - 2.4) * 0.36));
+  const b = Math.min(1 - a, 0.32);
+  const rest = 1 - a - b;
+  const dist = [a, b, rest * 0.6, rest * 0.25, rest * 0.15].map(x => Math.round(x * students)) as InstructorGrades["dist"];
+  return {
+    name,
+    key: name === "All Sections" ? "" : instructorKey(name),
+    avg,
+    students,
+    sections,
+    sigma,
+    dist,
+    bands: {
+      min: c(avg - 0.95 * spread),
+      p12: c(avg - 0.42 * spread),
+      p17: c(avg - 0.33 * spread),
+      p25: c(avg - 0.2 * spread),
+      median: c(avg + 0.02),
+      p75: c(avg + 0.17 * spread),
+      p83: c(avg + 0.25 * spread),
+      p88: c(avg + 0.31 * spread),
+      max: c(avg + 0.5 * spread),
+    },
+  };
+}
+
+function courseGrades(subject: string, number: string, overall: InstructorGrades, rows: InstructorGrades[]): CourseGrades {
+  const instructors = rows.sort((a, b) => b.avg - a.avg);
+  return { subject, number, overall, instructors, spread: instructors[0]!.avg - instructors[instructors.length - 1]!.avg, fetchedAt: now - 9 * 86400_000 };
+}
+
+const grades: Record<string, CourseGrades> = {
+  "CS 225": courseGrades("CS", "225", gradeRow("All Sections", 3.46, 8731, null, 34), [
+    gradeRow("Kindratenko, V.", 3.53, 301, 0.07, 2),
+    gradeRow("Solomon, B.", 3.48, 3481, 0.02, 12),
+    gradeRow("Evans, G.", 3.45, 4909, -0.01, 18),
+    gradeRow("Koe, K.", 3.02, 40, -0.45, 1, 1.3),
+  ]),
+  "CS 173": courseGrades("CS", "173", gradeRow("All Sections", 3.08, 6120, null, 26), [
+    gradeRow("Mattox, B.", 3.31, 1840, 0.24, 7),
+    gradeRow("Fleck, M.", 3.04, 3210, -0.04, 13),
+    gradeRow("Hardy, A.", 2.79, 1070, -0.31, 6, 1.2),
+  ]),
+  "MATH 241": courseGrades("MATH", "241", gradeRow("All Sections", 3.02, 9412, null, 61, 1.2), [
+    gradeRow("Rezk, C.", 3.48, 610, 0.45, 4),
+    gradeRow("Stadlmann, J.", 3.37, 980, 0.34, 6),
+    gradeRow("Heller, J.", 2.92, 2270, -0.09, 14, 1.2),
+    gradeRow("Sowers, R.", 2.56, 1510, -0.45, 9, 1.4),
+    gradeRow("Bergvelt, M.", 2.31, 820, -0.69, 5, 1.5),
+  ]),
+};
+
+function summary(c: CourseSeed): CourseSummary {
+  const code = `${c.subject} ${c.number}`;
+  return {
+    term: TERM,
+    subject: c.subject,
+    number: c.number,
+    title: c.title,
+    creditHours: c.credits,
+    sectionCount: c.sections.length,
+    genEds: c.genEds ?? [],
+    gpa: grades[code]?.overall.avg ?? genEdGpa[code] ?? null,
+  };
+}
 
 // ---------- mutable mock state ----------
 
@@ -503,16 +617,12 @@ function detail(subject: string, number: string): CourseDetail | null {
   const c = courses.find(x => x.subject === subject && x.number === number);
   if (!c) return null;
   return {
-    term: TERM,
-    subject: c.subject,
-    number: c.number,
-    title: c.title,
-    creditHours: c.credits,
-    sectionCount: c.sections.length,
+    ...summary(c),
     description: c.description,
     scheduleInfo: c.linked && Object.keys(c.linked).length ? "Students must register for one lecture and one linked section." : null,
     sections: c.sections.map(toSection),
     linkedOptions: c.linked,
+    grades: grades[`${c.subject} ${c.number}`] ?? null,
   };
 }
 
@@ -577,17 +687,40 @@ export async function mockRequest(method: string, path: string, body: any): Prom
       const instr = c.sections.find(s => s[8].toLowerCase().includes(q))?.[8] ?? null;
       if (code.includes(q) || code.replace(" ", "").includes(q.replace(" ", "")) || c.title.toLowerCase().includes(q) || crn || instr)
         hits.push({
-          term: TERM,
-          subject: c.subject,
-          number: c.number,
-          title: c.title,
-          creditHours: c.credits,
-          sectionCount: c.sections.length,
+          ...summary(c),
           matchedCrn: crn,
           matchedInstructor: crn ? null : instr,
         });
     }
     return hits;
+  }
+  if (key === "GET /api/geneds") {
+    const codes = (url.searchParams.get("codes") ?? "").split(",").filter(Boolean);
+    const any = url.searchParams.get("match") === "any";
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    const sort = url.searchParams.get("sort") ?? "gpa";
+    if (url.searchParams.get("term") !== TERM || codes.length === 0) return { hits: [], total: 0 };
+    const hits: GenEdHit[] = [];
+    for (const c of courses) {
+      const matched = codes.filter(code => c.genEds?.includes(code));
+      if (any ? matched.length === 0 : matched.length < codes.length) continue;
+      if (q && !`${c.subject} ${c.number} ${c.title}`.toLowerCase().includes(q)) continue;
+      hits.push({ ...summary(c), matchedCrn: null, matchedInstructor: null, matched });
+    }
+    const code = (h: GenEdHit) => `${h.subject} ${h.number.padStart(3, "0")}`;
+    const byGpa = (a: GenEdHit, b: GenEdHit) => (b.gpa ?? -1) - (a.gpa ?? -1);
+    hits.sort((a, b) =>
+      sort === "code"
+        ? code(a).localeCompare(code(b))
+        : sort === "matched"
+          ? b.matched.length - a.matched.length || byGpa(a, b) || code(a).localeCompare(code(b))
+          : byGpa(a, b) || code(a).localeCompare(code(b)),
+    );
+    return { hits: hits.slice(0, 200), total: hits.length };
+  }
+  if (key === "POST /api/grades/sync") {
+    await wait(800);
+    return { ok: true, courses: Object.keys(grades).length };
   }
   if ((m = /^GET \/api\/course\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(key))) {
     const d = detail(decodeURIComponent(m[2]!), decodeURIComponent(m[3]!));
@@ -1055,6 +1188,12 @@ function generate(plan: Plan): PlanGenerateResult {
           gapMin: gap,
           closed: avail.filter(a => a <= 0).length,
           minSeats: avail.length ? Math.min(...avail) : null,
+          gpa: (() => {
+            const g = picked
+              .map(p => bundleGpa(grades[`${p.pc.subject} ${p.pc.number}`], p.crns.map(c => sections[c]!)))
+              .filter((x): x is NonNullable<typeof x> => !!x);
+            return g.length ? g.reduce((n, x) => n + x.gpa, 0) / g.length : null;
+          })(),
         },
       });
       return;
@@ -1074,6 +1213,7 @@ function generate(plan: Plan): PlanGenerateResult {
     start: (a, b) => (b.stats.start ?? "").localeCompare(a.stats.start ?? ""),
     end: (a, b) => (a.stats.end ?? "").localeCompare(b.stats.end ?? ""),
     gaps: (a, b) => a.stats.gapMin - b.stats.gapMin,
+    gpa: (a, b) => (b.stats.gpa ?? -1) - (a.stats.gpa ?? -1),
   };
   list = list.sort((a, b) => cmp[plan.sort](a, b) || a.stats.gapMin - b.stats.gapMin || a.key.localeCompare(b.key));
   for (const f of fixed) sec(f.crn);

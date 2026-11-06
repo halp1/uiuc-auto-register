@@ -2,6 +2,7 @@ import {
   Activity,
   CalendarRange,
   ChevronsUpDown,
+  GraduationCap,
   LayoutGrid,
   Menu,
   Pause,
@@ -36,6 +37,7 @@ const nav = [
   { href: "/", label: "Overview", icon: LayoutGrid, match: (r: RouteMatch) => r.name === "overview" || r.name === "course" },
   { href: "/plan", label: "Plan", icon: CalendarRange, match: (r: RouteMatch) => r.name === "plan" },
   { href: "/search", label: "Search", icon: Search, match: (r: RouteMatch) => r.name === "search" },
+  { href: "/geneds", label: "Gen eds", icon: GraduationCap, match: (r: RouteMatch) => r.name === "geneds" },
   { href: "/activity", label: "Activity", icon: Activity, match: (r: RouteMatch) => r.name === "activity" },
   { href: "/settings", label: "Settings", icon: Settings, match: (r: RouteMatch) => r.name === "settings" },
 ];

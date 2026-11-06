@@ -1,10 +1,14 @@
 import { useSyncExternalStore, type MouseEvent } from "react";
 
+export type GenEdMatch = "all" | "any";
+export type GenEdSort = "gpa" | "matched" | "code";
+
 export type RouteMatch =
   | { name: "overview" }
   | { name: "plan"; id: number | null; guide: boolean }
   | { name: "setup"; step: string | null }
   | { name: "search"; q: string }
+  | { name: "geneds"; codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort }
   | { name: "course"; term: string; subject: string; number: string }
   | { name: "activity" }
   | { name: "settings" }
@@ -70,6 +74,17 @@ export function match(href: string): RouteMatch {
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
   if (parts.length === 0) return { name: "overview" };
   if (parts[0] === "search" && parts.length === 1) return { name: "search", q: url.searchParams.get("q") ?? "" };
+  if (parts[0] === "geneds" && parts.length === 1) {
+    const codes = (url.searchParams.get("req") ?? "").split(",").map(c => c.trim().toUpperCase()).filter(Boolean);
+    const sort = url.searchParams.get("sort");
+    return {
+      name: "geneds",
+      codes: [...new Set(codes)],
+      match: url.searchParams.get("match") === "any" ? "any" : "all",
+      q: url.searchParams.get("q") ?? "",
+      sort: sort === "matched" || sort === "code" ? sort : "gpa",
+    };
+  }
   if (parts[0] === "course" && parts.length === 4)
     return { name: "course", term: parts[1]!, subject: parts[2]!.toUpperCase(), number: parts[3]! };
   if (parts[0] === "plan" && parts.length === 1) {
@@ -88,6 +103,17 @@ export function useRoute(): RouteMatch {
 
 export function coursePath(term: string, subject: string, number: string) {
   return `/course/${encodeURIComponent(term)}/${encodeURIComponent(subject)}/${encodeURIComponent(number)}`;
+}
+
+/** /geneds URL with defaults left out. */
+export function genEdsPath(o: { codes: string[]; match: GenEdMatch; q: string; sort: GenEdSort }) {
+  const params = new URLSearchParams();
+  if (o.codes.length) params.set("req", o.codes.join(","));
+  if (o.match !== "all") params.set("match", o.match);
+  if (o.q.trim()) params.set("q", o.q.trim());
+  if (o.sort !== "gpa") params.set("sort", o.sort);
+  const qs = params.toString().replace(/%2C/g, ",");
+  return `/geneds${qs ? `?${qs}` : ""}`;
 }
 
 /** onClick handler for <a href> that routes client-side but keeps modifier-click behavior. */

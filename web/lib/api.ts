@@ -10,6 +10,7 @@ import type {
   SetupLoginResult,
   AppEvent,
   CourseDetail,
+  GenEdHit,
   Plan,
   PlanCourse,
   PlanGenerateResult,
@@ -109,6 +110,18 @@ export const api = {
   course: (term: string, subject: string, number: string, signal?: AbortSignal) =>
     request<CourseDetail>("GET", `/api/course/${enc(term)}/${enc(subject)}/${enc(number)}`, undefined, signal),
   syncCatalog: (term: string) => request<{ ok: true }>("POST", "/api/catalog/sync", { term }),
+  genEds: (
+    term: string,
+    o: { codes: string[]; match: "all" | "any"; q: string; sort: "gpa" | "matched" | "code" },
+    signal?: AbortSignal,
+  ) =>
+    request<{ hits: GenEdHit[]; total: number }>(
+      "GET",
+      `/api/geneds?term=${enc(term)}&codes=${enc(o.codes.join(","))}&match=${o.match}&q=${enc(o.q)}&sort=${o.sort}`,
+      undefined,
+      signal,
+    ),
+  syncGrades: () => request<{ ok: true; courses: number }>("POST", "/api/grades/sync"),
 
   createWanted: (body: {
     term: string;
