@@ -346,6 +346,8 @@ export interface CourseSummary {
   title: string;
   creditHours: string | null;
   sectionCount: number;
+  genEds: string[]; // Course Explorer gen ed attribute codes, e.g. ["1HP", "1US"] (see src/core/gened.ts)
+  gpa: number | null; // all-sections average GPA from recent terms, null when unknown
 }
 
 export interface CourseDetail extends CourseSummary {
@@ -353,6 +355,44 @@ export interface CourseDetail extends CourseSummary {
   scheduleInfo: string | null;
   sections: Section[];
   linkedOptions: Record<string, string[][]>; // crn -> options (each option = linked crns)
+  grades: CourseGrades | null;
+}
+
+// Grade disparity (waf.cs.illinois.edu data, recent terms)
+export interface GradeBands {
+  min: number; // gpa_bottom
+  p12: number; // gpa_7_8 (12.5th percentile)
+  p17: number; // gpa_5_6
+  p25: number; // bottomQuartGPA
+  median: number;
+  p75: number; // topQuartGPA
+  p83: number; // gpa_1_6
+  p88: number; // gpa_1_8
+  max: number; // gpa_top
+}
+
+export interface InstructorGrades {
+  name: string; // "Evans, G." or "All Sections"
+  key: string; // instructorKey(name), "" for All Sections
+  avg: number;
+  students: number;
+  sections: number;
+  sigma: number | null; // standard deviations from the course average, null for All Sections
+  dist: [number, number, number, number, number]; // A B C D F counts
+  bands: GradeBands;
+}
+
+export interface CourseGrades {
+  subject: string;
+  number: string;
+  overall: InstructorGrades;
+  instructors: InstructorGrades[]; // highest average first
+  spread: number | null;
+  fetchedAt: number;
+}
+
+export interface GenEdHit extends SearchHit {
+  matched: string[]; // which of the requested codes this course carries
 }
 
 export interface SearchHit extends CourseSummary {
@@ -378,7 +418,7 @@ export interface PlanBreak {
   end: string;
 }
 
-export type PlanSort = "open" | "days" | "start" | "end" | "gaps";
+export type PlanSort = "open" | "days" | "start" | "end" | "gaps" | "gpa";
 
 export interface PlanCourse {
   id: number;
@@ -426,6 +466,7 @@ export interface PlanScheduleStats {
   gapMin: number; // idle minutes between meetings, summed over days
   closed: number; // sections known to have no open seat
   minSeats: number | null; // lowest known availability
+  gpa: number | null; // mean expected GPA over picks with grade data
 }
 
 export interface PlanSchedule {

@@ -24,6 +24,7 @@ export interface CatalogCourse {
   creditHours: string | null;
   description: string | null;
   scheduleInfo: string | null;
+  genEds: string[]; // gen ed attribute codes, e.g. "1HP"
   sections: CatalogSection[];
 }
 
@@ -32,7 +33,7 @@ export interface Subject {
   name: string;
 }
 
-const ARRAY_TAGS = new Set(["cascadingCourse", "detailedSection", "meeting", "instructor"]);
+const ARRAY_TAGS = new Set(["cascadingCourse", "detailedSection", "meeting", "instructor", "category", "genEdAttribute"]);
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -105,6 +106,16 @@ function parseSection(node: Node): CatalogSection | null {
   };
 }
 
+const GENED_CODE = /^1[A-Z0-9]{1,4}$/;
+
+function parseGenEds(node: Node): string[] {
+  const codes = list<Node>(node.genEdCategories?.category)
+    .flatMap(category => list<Node>(category.genEdAttributes?.genEdAttribute))
+    .map(attribute => attr(attribute, "code"))
+    .filter((code): code is string => !!code && GENED_CODE.test(code));
+  return [...new Set(codes)];
+}
+
 function parseCourseNode(node: Node, term: string, subjectHint?: string): CatalogCourse | null {
   const id = attr(node, "id") ?? "";
   const match = /^([A-Z]+)\s+(\w+)$/.exec(id);
@@ -119,6 +130,7 @@ function parseCourseNode(node: Node, term: string, subjectHint?: string): Catalo
     creditHours: text(node.creditHours)?.replace(/\.$/, "") ?? null,
     description: text(node.description),
     scheduleInfo: text(node.classScheduleInformation),
+    genEds: parseGenEds(node),
     sections: list<Node>(node.detailedSections?.detailedSection)
       .map(parseSection)
       .filter((section): section is CatalogSection => section !== null),

@@ -2,14 +2,20 @@
 
 import type { SeatSource } from "../core/contracts";
 import type { Store } from "../core/db";
-import type { CourseDetail, Meeting, SearchHit, Section } from "../core/types";
+import type { CourseDetail, GenEdHit, Meeting, SearchHit, Section } from "../core/types";
 import type { LinkedSections } from "../banner/linked";
 import type { Explorer } from "./explorer";
+import { getCourseGrades } from "./grades";
 import { getStoredCourse, getStoredSections, saveCourses, storedLinkedOptions } from "./store";
 
 type Row = Record<string, any>;
 
 const DEFAULT_LIMIT = 25;
+
+/** Columns every summary query selects next to c.*: gen ed codes and the all-sections GPA. */
+const SUMMARY_EXTRA = `(SELECT GROUP_CONCAT(code) FROM (SELECT code FROM cat_geneds g
+    WHERE g.term = c.term AND g.subject = c.subject AND g.number = c.number ORDER BY code)) AS gen_eds,
+  (SELECT avg FROM grade_stats s WHERE s.subject = c.subject AND s.number = c.number AND s.instructor_key = '') AS gpa`;
 
 function summaryFromRow(row: Row): Omit<SearchHit, "matchedCrn" | "matchedInstructor"> {
   return {
@@ -19,6 +25,8 @@ function summaryFromRow(row: Row): Omit<SearchHit, "matchedCrn" | "matchedInstru
     title: row.title,
     creditHours: row.credit_hours,
     sectionCount: row.section_count,
+    genEds: row.gen_eds ? String(row.gen_eds).split(",") : [],
+    gpa: typeof row.gpa === "number" ? row.gpa : null,
   };
 }
 
@@ -79,7 +87,7 @@ export function search(store: Store, term: string, q: string, limit = DEFAULT_LI
   if (/^\d{5}$/.test(query)) {
     const row = store.db
       .query(
-        `SELECT c.*, s.crn AS matched FROM cat_sections s JOIN cat_courses c
+        `SELECT c.*, ${SUMMARY_EXTRA}, s.crn AS matched FROM cat_sections s JOIN cat_courses c
          ON c.term = s.term AND c.subject = s.subject AND c.number = s.number WHERE s.term = ? AND s.crn = ?`,
       )
       .get(term, query) as Row | null;
@@ -90,7 +98,7 @@ export function search(store: Store, term: string, q: string, limit = DEFAULT_LI
   const code = /^([a-z]{2,5})\s*(\d{1,3}[a-z]?)$/i.exec(query);
   if (code) {
     const rows = store.db
-      .query("SELECT * FROM cat_courses WHERE term = ? AND subject = ? AND number LIKE ? ORDER BY number LIMIT ?")
+      .query(`SELECT c.*, ${SUMMARY_EXTRA} FROM cat_courses c WHERE term = ? AND subject = ? AND number LIKE ? ORDER BY number LIMIT ?`)
       .all(term, code[1]!.toUpperCase(), `${code[2]!.toUpperCase()}%`, limit) as Row[];
     rows.forEach(row => add(row));
   }
@@ -98,7 +106,7 @@ export function search(store: Store, term: string, q: string, limit = DEFAULT_LI
   // 3. Bare subject: "math" lists MATH courses first.
   if (/^[a-z]{2,5}$/i.test(query)) {
     const rows = store.db
-      .query("SELECT * FROM cat_courses WHERE term = ? AND subject = ? ORDER BY number LIMIT ?")
+      .query(`SELECT c.*, ${SUMMARY_EXTRA} FROM cat_courses c WHERE term = ? AND subject = ? ORDER BY number LIMIT ?`)
       .all(term, query.toUpperCase(), limit) as Row[];
     rows.forEach(row => add(row));
   }
@@ -110,7 +118,7 @@ export function search(store: Store, term: string, q: string, limit = DEFAULT_LI
     try {
       rows = store.db
         .query(
-          `SELECT c.* FROM cat_fts f JOIN cat_courses c ON c.term = f.term AND c.subject = f.subject AND c.number = f.number
+          `SELECT c.*, ${SUMMARY_EXTRA} FROM cat_fts f JOIN cat_courses c ON c.term = f.term AND c.subject = f.subject AND c.number = f.number
            WHERE cat_fts MATCH ? AND f.term = ?
            ORDER BY bm25(cat_fts, 0.0, 6.0, 8.0, 8.0, 4.0, 3.0, 1.0), c.subject, c.number LIMIT ?`,
         )
@@ -194,6 +202,7 @@ export async function courseDetail(
   await Promise.all([linkedWork(), seatWork()]);
 
   const sections: Section[] = stored.map(section => ({ ...section, seats: store.getSeat(term, section.crn) }));
+  const grades = getCourseGrades(store, course.subject, course.number);
   return {
     term,
     subject: course.subject,
@@ -201,9 +210,70 @@ export async function courseDetail(
     title: course.title,
     creditHours: course.creditHours,
     sectionCount: course.sectionCount,
+    genEds: course.genEds,
+    gpa: grades?.overall.avg ?? null,
     description: course.description,
     scheduleInfo: course.scheduleInfo,
     sections,
     linkedOptions: storedLinkedOptions(store, term, crns),
+    grades,
+  };
+}
+
+export interface GenEdQuery {
+  codes: string[];
+  match?: "all" | "any";
+  q?: string;
+  sort?: "gpa" | "matched" | "code";
+  limit?: number;
+}
+
+/**
+ * Courses of one term that carry the requested gen ed codes: every code ("all") or at least one ("any").
+ * q narrows by subject ("PHIL") or title words. Sorted by GPA (unknown last), match count, or code.
+ */
+export function genEdSearch(store: Store, term: string, query: GenEdQuery): { hits: GenEdHit[]; total: number } {
+  const codes = [...new Set(query.codes)];
+  if (!codes.length) return { hits: [], total: 0 };
+  const match = query.match ?? "all";
+  const limit = Math.min(500, Math.max(1, query.limit ?? 200));
+  const params: (string | number)[] = [term, ...codes];
+  let where = "";
+  const q = (query.q ?? "").trim();
+  if (q) {
+    const words = tokenize(q);
+    const subject = /^[a-z]{2,5}$/i.test(q) ? q.toUpperCase() : null;
+    const titleMatch = words.map(() => "LOWER(c.title) LIKE ?").join(" AND ") || "0";
+    where = subject ? `AND (c.subject = ? OR (${titleMatch}))` : `AND (${titleMatch})`;
+    if (subject) params.push(subject);
+    params.push(...words.map(word => `%${word}%`));
+  }
+  const order =
+    query.sort === "code"
+      ? "c.subject, c.number"
+      : query.sort === "matched"
+        ? "m.n DESC, gpa IS NULL, gpa DESC, c.subject, c.number"
+        : "gpa IS NULL, gpa DESC, m.n DESC, c.subject, c.number";
+  const rows = store.db
+    .query(
+      `WITH m AS (
+         SELECT subject, number, COUNT(*) AS n, GROUP_CONCAT(code) AS matched FROM cat_geneds
+         WHERE term = ? AND code IN (${codes.map(() => "?").join(", ")}) GROUP BY subject, number
+         HAVING COUNT(*) >= ${match === "all" ? codes.length : 1}
+       )
+       SELECT c.*, ${SUMMARY_EXTRA}, m.matched FROM m JOIN cat_courses c
+         ON c.term = ?1 AND c.subject = m.subject AND c.number = m.number
+       WHERE 1 ${where}
+       ORDER BY ${order}`,
+    )
+    .all(...params) as Row[];
+  return {
+    total: rows.length,
+    hits: rows.slice(0, limit).map(row => ({
+      ...summaryFromRow(row),
+      matchedCrn: null,
+      matchedInstructor: null,
+      matched: String(row.matched ?? "").split(",").filter(Boolean).sort(),
+    })),
   };
 }

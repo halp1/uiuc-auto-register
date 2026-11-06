@@ -49,6 +49,9 @@ function writeCourse(store: Store, course: CatalogCourse): void {
       instructorText(names),
     );
   }
+  db.query("DELETE FROM cat_geneds WHERE term = ? AND subject = ? AND number = ?").run(term, subject, number);
+  const genEd = db.query("INSERT OR IGNORE INTO cat_geneds (term, subject, number, code) VALUES (?, ?, ?, ?)");
+  for (const code of course.genEds ?? []) genEd.run(term, subject, number, code);
   db.query("DELETE FROM cat_fts WHERE term = ? AND subject = ? AND number = ?").run(term, subject, number);
   db.query("INSERT INTO cat_fts (term, subject, number, code, title, instructors, crns) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     term,
@@ -76,6 +79,7 @@ export function replaceSubject(store: Store, term: string, subject: string, cour
       store.db.query("DELETE FROM cat_courses WHERE term = ? AND subject = ? AND number = ?").run(term, subject, row.number);
       store.db.query("DELETE FROM cat_sections WHERE term = ? AND subject = ? AND number = ?").run(term, subject, row.number);
       store.db.query("DELETE FROM cat_fts WHERE term = ? AND subject = ? AND number = ?").run(term, subject, row.number);
+      store.db.query("DELETE FROM cat_geneds WHERE term = ? AND subject = ? AND number = ?").run(term, subject, row.number);
     }
     courses.forEach(course => writeCourse(store, course));
   });
@@ -110,6 +114,19 @@ export interface StoredCourse {
   description: string | null;
   scheduleInfo: string | null;
   sectionCount: number;
+  genEds: string[];
+}
+
+/** Gen ed codes of one course. */
+export function courseGenEds(store: Store, term: string, subject: string, number: string): string[] {
+  return (
+    store.db.query("SELECT code FROM cat_geneds WHERE term = ? AND subject = ? AND number = ? ORDER BY code").all(term, subject, number) as Row[]
+  ).map(row => row.code as string);
+}
+
+/** True once the term's catalog has any gen ed data (catalogs synced before gen eds were stored have none). */
+export function hasGenEds(store: Store, term: string): boolean {
+  return !!store.db.query("SELECT 1 FROM cat_geneds WHERE term = ? LIMIT 1").get(term);
 }
 
 export function getStoredCourse(store: Store, term: string, subject: string, number: string): StoredCourse | null {
@@ -126,6 +143,7 @@ export function getStoredCourse(store: Store, term: string, subject: string, num
     description: row.description,
     scheduleInfo: row.schedule_info,
     sectionCount: row.section_count,
+    genEds: courseGenEds(store, row.term, row.subject, row.number),
   };
 }
 

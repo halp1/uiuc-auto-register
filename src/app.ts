@@ -5,7 +5,8 @@ import { LinkedSections } from "./banner/linked";
 import { SimRegistrar } from "./banner/registrar/sim";
 import { SimBanner, SimSeatSource } from "./banner/sim/state";
 import { Explorer } from "./catalog/explorer";
-import { courseDetail, search } from "./catalog/search";
+import { GradeSync } from "./catalog/grades";
+import { courseDetail, genEdSearch, search } from "./catalog/search";
 import { getStoredCourse } from "./catalog/store";
 import { CatalogSync } from "./catalog/sync";
 import { Bus } from "./core/bus";
@@ -120,6 +121,7 @@ export async function createApp(config: Config, options: AppOptions = {}): Promi
 
   // ---- catalog ----
   const catalog = new CatalogSync({ store, events });
+  const grades = new GradeSync({ store, events });
   const explorer = new Explorer();
   const linked = new LinkedSections(store);
   const plans = new PlanService({
@@ -210,6 +212,8 @@ export async function createApp(config: Config, options: AppOptions = {}): Promi
     catalog,
     sim,
     search: (term, q) => search(store, term, q),
+    genEdSearch: (term, query) => genEdSearch(store, term, query),
+    grades,
     courseDetail: (term, subject, number) => courseDetail(store, term, subject, number, { explorer, linked, seatSource: primary }),
     courseTitle: async (term, subject, number) => {
       const stored = getStoredCourse(store, term, subject, number);
@@ -262,6 +266,7 @@ export async function createApp(config: Config, options: AppOptions = {}): Promi
       ticket.start();
       ticketDetector.start();
       catalog.startDaily(() => settings().activeTerm);
+      grades.startDaily();
       real?.start();
 
       const s = settings();
@@ -281,6 +286,7 @@ export async function createApp(config: Config, options: AppOptions = {}): Promi
       if (tick) clearInterval(tick);
       if (prune) clearInterval(prune);
       catalog.stopDaily();
+      grades.stop();
       ticket.stop();
       ticketDetector.stop();
       await poller.stop();

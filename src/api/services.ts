@@ -2,10 +2,13 @@ import type { AccessControl } from "../auth/access";
 import type { Bus } from "../core/bus";
 import type { Config } from "../core/config";
 import type { CatalogService, ControlApi, Notifier, OrchestratorApi, PollerApi, RehearsalReport, SessionManager, SimBannerApi, TicketApi } from "../core/contracts";
+import type { GradeSync } from "../catalog/grades";
+import type { GenEdQuery } from "../catalog/search";
 import type { Store } from "../core/db";
 import type { Events } from "../core/events";
 import type {
   CourseDetail,
+  GenEdHit,
   Plan,
   PlanGenerateResult,
   PlanPick,
@@ -33,6 +36,9 @@ export interface AppServices {
   catalog: CatalogService;
   sim: SimBannerApi | null; // only in simulated mode
   search(term: string, q: string): SearchHit[];
+  genEdSearch(term: string, query: GenEdQuery): { hits: GenEdHit[]; total: number };
+  /** Instructor grade data (weekly refresh). */
+  grades: Pick<GradeSync, "sync">;
   courseDetail(term: string, subject: string, number: string): Promise<CourseDetail | null>;
   /** Catalog title only: local store first, Course Explorer when missing. No seat or linked lookups. */
   courseTitle(term: string, subject: string, number: string): Promise<string | null>;

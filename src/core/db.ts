@@ -102,11 +102,22 @@ const MIGRATIONS: string[] = [
      id TEXT PRIMARY KEY, public_key BLOB NOT NULL, counter INTEGER NOT NULL, transports TEXT NOT NULL DEFAULT '[]',
      name TEXT NOT NULL, rp_id TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
    CREATE TABLE recovery_codes (hash TEXT PRIMARY KEY, used_at INTEGER);`,
+  // Gen ed attributes per course and instructor grade data (src/catalog/grades.ts).
+  `CREATE TABLE cat_geneds (term TEXT NOT NULL, subject TEXT NOT NULL, number TEXT NOT NULL, code TEXT NOT NULL,
+     PRIMARY KEY (term, subject, number, code));
+   CREATE INDEX cat_geneds_code ON cat_geneds(term, code);
+   CREATE TABLE grade_stats (
+     subject TEXT NOT NULL, number TEXT NOT NULL, instructor_key TEXT NOT NULL,
+     name TEXT NOT NULL, avg REAL NOT NULL, students INTEGER NOT NULL, sections INTEGER NOT NULL, sigma REAL,
+     dist TEXT NOT NULL, bands TEXT NOT NULL, spread REAL,
+     PRIMARY KEY (subject, number, instructor_key));
+   CREATE TABLE grade_meta (id INTEGER PRIMARY KEY CHECK (id = 1), fetched_at INTEGER NOT NULL, courses INTEGER NOT NULL);
+   DELETE FROM cat_meta;`,
 ];
 
 export const PLAN_LIMITS = { plansPerTerm: 10, coursesPerPlan: 12, breaks: 20, excludedCrns: 60 } as const;
 
-const PLAN_SORTS: readonly PlanSort[] = ["open", "days", "start", "end", "gaps"];
+const PLAN_SORTS: readonly PlanSort[] = ["open", "days", "start", "end", "gaps", "gpa"];
 
 export function defaultRouting(): Record<NotifyEvent, Route> {
   return Object.fromEntries(NOTIFY_EVENTS.map(event => [event, { discord: false, push: false, webhook: false }])) as Record<

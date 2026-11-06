@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Store } from "../../src/core/db";
 import { Explorer, parseCascade, parseCourseDetail, parseSubjects, to24h } from "../../src/catalog/explorer";
-import { courseDetail, search } from "../../src/catalog/search";
-import { saveCourses } from "../../src/catalog/store";
+import { parseGradeData, replaceGrades } from "../../src/catalog/grades";
+import { courseDetail, genEdSearch, search } from "../../src/catalog/search";
+import { replaceSubject, saveCourses } from "../../src/catalog/store";
 import { CatalogSync, cleanTermDescription, parseTerms } from "../../src/catalog/sync";
 import { LinkedSections } from "../../src/banner/linked";
 
@@ -55,6 +56,59 @@ describe("explorer parsing", () => {
     expect(courses.length).toBe(5);
     expect(courses[0]).toMatchObject({ subject: "AFAS", number: "102", title: "Leadership Laboratory" });
     expect(courses[0]!.sections[0]!.meetings.length).toBe(3);
+  });
+});
+
+describe("gen eds", () => {
+  let store: Store;
+  beforeAll(async () => {
+    store = new Store(":memory:");
+    const aas = parseCascade(await fixture("explorer-aas-cascade-gened.xml"), T);
+    saveCourses(store, [...aas, parseCourseDetail(await fixture("explorer-math-241-detail.xml"), T)!]);
+    replaceGrades(store, parseGradeData(JSON.parse(await fixture("grades-sample.json"))), 1);
+  });
+
+  test("cascade and detail carry gen ed codes", async () => {
+    const aas = parseCascade(await fixture("explorer-aas-cascade-gened.xml"), T);
+    expect(Object.fromEntries(aas.map(c => [c.number, c.genEds]))).toEqual({
+      "100": ["1SS", "1US"],
+      "105": ["1US"],
+      "200": ["1HP", "1US"],
+      "201": ["1SS", "1US"],
+    });
+    expect(parseCourseDetail(await fixture("explorer-math-241-detail.xml"), T)!.genEds).toEqual(["1QR2"]);
+  });
+
+  const find = (codes: string[], opts: { match?: "all" | "any"; q?: string; sort?: "gpa" | "matched" | "code" } = {}) =>
+    genEdSearch(store, T, { codes, ...opts }).hits.map(h => `${h.subject} ${h.number} ${h.matched.join("+")}`);
+
+  test.each([
+    // AAS 100 has grade data and sorts first, the rest have none and fall back to code order.
+    [["1US"], {}, ["AAS 100 1US", "AAS 105 1US", "AAS 200 1US", "AAS 201 1US"]],
+    [["1US", "1SS"], {}, ["AAS 100 1SS+1US", "AAS 201 1SS+1US"]],
+    [["1HP", "1SS", "1US"], {}, []],
+    [["1HP", "1SS"], { match: "any", sort: "matched" }, ["AAS 100 1SS", "AAS 200 1HP", "AAS 201 1SS"]],
+    [["1HP", "1US"], { match: "any", sort: "matched" }, ["AAS 200 1HP+1US", "AAS 100 1US", "AAS 105 1US", "AAS 201 1US"]],
+    [["1US"], { q: "aas", sort: "code" }, ["AAS 100 1US", "AAS 105 1US", "AAS 200 1US", "AAS 201 1US"]],
+    [["1US"], { q: "zzz" }, []],
+    [["1QR2"], {}, ["MATH 241 1QR2"]],
+  ] as [string[], Parameters<typeof find>[1], string[]][])("%p %p", (codes, opts, expected) => {
+    expect(find(codes, opts)).toEqual(expected);
+  });
+
+  test("search hits carry gen eds and the course GPA", () => {
+    const hit = search(store, T, "aas 100")[0]!;
+    expect(hit.genEds).toEqual(["1SS", "1US"]);
+    expect(hit.gpa).toBeCloseTo(3.53, 2);
+    expect(search(store, T, "aas 105")[0]!.gpa).toBeNull();
+  });
+
+  test("resaving a subject drops gen eds of removed courses", async () => {
+    const local = new Store(":memory:");
+    const aas = parseCascade(await fixture("explorer-aas-cascade-gened.xml"), T);
+    replaceSubject(local, T, "AAS", aas);
+    replaceSubject(local, T, "AAS", aas.filter(c => c.number !== "200"));
+    expect(genEdSearch(local, T, { codes: ["1HP"] }).total).toBe(0);
   });
 });
 

@@ -4,6 +4,7 @@ import { SCHEDULE_READER } from "../banner/registrar/types";
 import { isMode } from "../core/config";
 import { isTermCode, termLabel } from "../core/terms";
 import { PLAN_LIMITS } from "../core/db";
+import { isGenEdCode } from "../core/gened";
 import {
   NOTIFY_EVENTS,
   ONBOARDING_STEPS,
@@ -96,7 +97,7 @@ function validFilters(value: unknown): AnyFilters {
   return { excludeDays, excludeTimes, excludeInstructors };
 }
 
-const PLAN_SORTS: PlanSort[] = ["open", "days", "start", "end", "gaps"];
+const PLAN_SORTS: PlanSort[] = ["open", "days", "start", "end", "gaps", "gpa"];
 const SUBJECT = /^[A-Za-z]{2,5}$/;
 const NUMBER = /^\d{3}[A-Za-z]?$/;
 
@@ -449,6 +450,30 @@ export function apiRoutes(s: AppServices) {
         const detail = await s.courseDetail(term, subject!.toUpperCase(), number!);
         if (!detail) throw new HttpError(404, `${subject!.toUpperCase()} ${number} is not offered in ${termLabel(term)}.`);
         return json(detail);
+      },
+    },
+    "/api/geneds": {
+      GET: req => {
+        const url = new URL(req.url);
+        const term = url.searchParams.get("term") ?? s.settings().activeTerm;
+        if (!term || !isTermCode(term)) throw new HttpError(400, "Pick a term first.");
+        const codes = [...new Set((url.searchParams.get("codes") ?? "").split(",").map(c => c.trim().toUpperCase()).filter(Boolean))];
+        if (!codes.length || !codes.every(isGenEdCode)) throw new HttpError(400, "Pick one or more gen ed requirements.");
+        const match = url.searchParams.get("match") ?? "all";
+        if (match !== "all" && match !== "any") throw new HttpError(400, "Match must be all or any.");
+        const sort = url.searchParams.get("sort") ?? "gpa";
+        if (sort !== "gpa" && sort !== "matched" && sort !== "code") throw new HttpError(400, "Sort must be gpa, matched, or code.");
+        const q = (url.searchParams.get("q") ?? "").trim().slice(0, 100);
+        return json(s.genEdSearch(term, { codes, match, sort, q }));
+      },
+    },
+    "/api/grades/sync": {
+      POST: async () => {
+        try {
+          return json({ ok: true, ...(await s.grades.sync({ force: true })) });
+        } catch {
+          throw new HttpError(502, "Could not download the grade data. Try again later.");
+        }
       },
     },
     "/api/catalog/sync": {

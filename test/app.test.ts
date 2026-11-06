@@ -35,6 +35,7 @@ beforeAll(async () => {
   store.db.query("INSERT INTO cat_meta (term, synced_at, courses) VALUES ('120271', ?, 0)").run(Date.now());
   // Catalog and linked sections for the plan routes, so course detail never fetches.
   await seedCatalog(store);
+  store.db.query("INSERT INTO grade_meta (id, fetched_at, courses) VALUES (1, ?, 0)").run(Date.now());
   app = await createApp(makeConfig("simulated", { chromePath: null }), { store });
   // Simulated mode never polls Banner, but block outbound calls anyway.
   app.services.terms = async () => [{ code: "120271", description: "Spring 2027" }];
@@ -200,6 +201,14 @@ test("schedule planner routes: plans, courses, generate, target", async () => {
 // ---------- account, setup, and mode ----------
 
 const KEY = "JBSWY3DPEHPK3PXP"; // RFC test seed
+
+test("gen ed route validates codes and finds courses", async () => {
+  expect((await call("GET", "/api/geneds?term=120271&codes=NOPE")).status).toBe(400);
+  expect((await call("GET", "/api/geneds?term=120271&codes=1QR2&match=some")).status).toBe(400);
+  const found = await call("GET", "/api/geneds?term=120271&codes=1QR2,1HP&match=any");
+  expect(found.status).toBe(200);
+  expect(found.json.hits.map((h: any) => `${h.subject} ${h.number}`)).toEqual(["CS 225", "MATH 241"]);
+});
 
 test("credentials: normalized, encrypted at rest, never returned", async () => {
   const ok = await call("PUT", "/api/credentials", { netid: " JDoe2@illinois.edu ", password: "hunter2-Secret!", totpSecret: "jbsw y3dp ehpk 3pxp" });
