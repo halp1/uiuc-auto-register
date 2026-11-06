@@ -1,6 +1,7 @@
 // Fake backend used only when the URL has ?mock=1. Never imported otherwise.
 import type { RehearsalReport } from "../../src/core/contracts";
 import { bundleGpa, instructorKey } from "../../src/core/grades";
+import { meetsStanding, standingOnlyPrereq } from "../../src/core/standing";
 import {
   NOTIFY_EVENTS,
   type AppEvent,
@@ -197,7 +198,7 @@ const genEdGpa: Record<string, number> = {
   "PHIL 101": 3.21, "HIST 172": 3.38, "AFRO 100": 3.62, "ASST 120": 3.55, "ENGL 119": 3.47, "MUS 130": 3.71, "ARTH 110": 3.29,
   "PSYC 100": 3.12, "ECON 102": 2.94, "ANTH 103": 3.58, "IB 105": 3.05, "ASTR 100": 3.41, "LING 100": 3.33,
 };
-const genEdPrereq: Record<string, string> = { "AFRO 224": "AFRO 100 or consent of instructor", "ENGL 119": "RHET 105", "ECON 102": "MATH 112 or consent of instructor", "LING 100": "One course in social science" };
+const genEdPrereq: Record<string, string> = { "AFRO 224": "AFRO 100 or consent of instructor", "ENGL 119": "RHET 105", "PHIL 101": "Junior status", "HIST 172": "Senior standing", "ECON 102": "MATH 112 or consent of instructor", "LING 100": "One course in social science" };
 let genEdCrn = 70100;
 for (const [subject, number, title, credits, genEds, days, start, end, instructor, available] of genEdSeeds)
   courses.push({
@@ -447,6 +448,7 @@ let settings: PublicSettings = {
   ticketSource: "banner",
   ticketCheckedAt: now - 47 * min,
   ticketCheckedTerm: TERM,
+  classStanding: "junior",
   sessionLoggedOut: false,
   liveEnabled: false,
   liveTerm: null,
@@ -709,8 +711,10 @@ export async function mockRequest(method: string, path: string, body: any): Prom
       if (any ? matched.length === 0 : matched.length < codes.length) continue;
       if (q && !`${c.subject} ${c.number} ${c.title}`.toLowerCase().includes(q)) continue;
       const prereq = /Prerequisites?: (.+?)\.?$/.exec(c.description)?.[1] ?? null;
-      if (noPrereq && prereq) continue;
-      hits.push({ ...summary(c), matchedCrn: null, matchedInstructor: null, matched, prereq });
+      const standingOnly = prereq ? standingOnlyPrereq(prereq) : null;
+      const have = settings.classStanding;
+      if (noPrereq && prereq && !(standingOnly && (!have || meetsStanding(have, standingOnly)))) continue;
+      hits.push({ ...summary(c), matchedCrn: null, matchedInstructor: null, matched, prereq, standingOnly });
     }
     const code = (h: GenEdHit) => `${h.subject} ${h.number.padStart(3, "0")}`;
     const byGpa = (a: GenEdHit, b: GenEdHit) => (b.gpa ?? -1) - (a.gpa ?? -1);

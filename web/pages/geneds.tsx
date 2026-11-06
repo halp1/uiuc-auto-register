@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { FilterChip, InlineError, PageHeader } from "@/components/ui/list";
 import { Segmented } from "@/components/ui/segmented";
+import { meetsStanding, STANDING_LABEL, type ClassStanding } from "../../src/core/standing";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
@@ -43,6 +44,7 @@ export function GenEdsPage({ route }: { route: Route }) {
   const term = useStore(s => s.settings?.activeTerm ?? null);
   const terms = useStore(s => s.terms);
   const catalog = useStore(s => s.status!.catalog);
+  const standing = useStore(s => s.settings?.classStanding ?? null);
   const { codes, match, sort, noPrereq } = route;
   const [q, setQ] = useState(route.q);
   const [result, setResult] = useState<{ hits: GenEdHit[]; total: number } | null>(null);
@@ -87,7 +89,7 @@ export function GenEdsPage({ route }: { route: Route }) {
       clearTimeout(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [term, key, match, query, sort, noPrereq, catalog.syncedAt]);
+  }, [term, key, match, query, sort, noPrereq, standing, catalog.syncedAt]);
 
   async function sync() {
     if (!term) return;
@@ -177,9 +179,14 @@ export function GenEdsPage({ route }: { route: Route }) {
               className="h-9 w-full rounded-md border border-border-strong bg-surface-2 pl-9 pr-3 text-sm text-fg placeholder:text-placeholder transition-[border-color,box-shadow] duration-150 ease-out hover:border-border-hover focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 [&::-webkit-search-cancel-button]:hidden"
             />
           </div>
-          <FilterChip active={noPrereq} onClick={() => go({ noPrereq: !noPrereq })} className="h-9 px-3">
+          <FilterChip
+            active={noPrereq}
+            onClick={() => go({ noPrereq: !noPrereq })}
+            className="h-9 px-3"
+            title={standing ? `Keeps courses that only need ${STANDING_LABEL[standing].toLowerCase()} standing or lower` : undefined}
+          >
             {noPrereq && <Check aria-hidden />}
-            No prerequisites
+            {standing ? `No prerequisites for a ${STANDING_LABEL[standing].toLowerCase()}` : "No prerequisites"}
           </FilterChip>
           <Select aria-label="Sort" className="w-48" value={sort} onValueChange={v => go({ sort: v as GenEdSort })} options={SORTS} />
         </div>
@@ -215,7 +222,7 @@ export function GenEdsPage({ route }: { route: Route }) {
             )}
           >
             {hits.map(hit => (
-              <HitRow key={`${hit.subject}${hit.number}`} hit={hit} term={term} />
+              <HitRow key={`${hit.subject}${hit.number}`} hit={hit} term={term} standing={standing} />
             ))}
           </ul>
         </div>
@@ -224,7 +231,7 @@ export function GenEdsPage({ route }: { route: Route }) {
   );
 }
 
-function HitRow({ hit, term }: { hit: GenEdHit; term: string }) {
+function HitRow({ hit, term, standing }: { hit: GenEdHit; term: string; standing: ClassStanding | null }) {
   const href = coursePath(hit.term, hit.subject, hit.number);
   return (
     <li className="relative grid min-h-14 grid-cols-[80px_minmax(0,1fr)_auto] items-center gap-x-4 px-4 py-3 transition-colors duration-150 ease-out hover:bg-hover sm:grid-cols-[110px_minmax(0,1fr)_auto_44px_auto]">
@@ -241,6 +248,9 @@ function HitRow({ hit, term }: { hit: GenEdHit; term: string }) {
         <GenEdPills codes={hit.genEds} matched={hit.matched} className="mt-1" />
         {hit.prereq && (
           <span className="mt-1 block truncate text-xs text-fg-muted" title={`Prerequisite: ${hit.prereq}`}>
+            {hit.standingOnly && standing && meetsStanding(standing, hit.standingOnly) && (
+              <Check className="mr-1 inline size-3 align-[-2px] text-ready" aria-label="Your standing meets this" />
+            )}
             Prerequisite: {hit.prereq}
           </span>
         )}

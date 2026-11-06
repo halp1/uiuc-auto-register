@@ -1,6 +1,7 @@
 import { Bell, CircleCheck, CircleX, LogIn, LogOut, RefreshCw, Send, TriangleAlert, X, Zap } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RehearsalReport } from "../../src/core/contracts";
+import { STANDING_LABEL, STANDINGS, type ClassStanding } from "../../src/core/standing";
 import { NOTIFY_EVENTS, type Mode, type NotifyEvent, type PublicSettings, type Route, type SettingsPatch } from "../../src/core/types";
 import { ConfirmDialog } from "@/components/confirm";
 import { CredentialFields, credentialPatch, type CredentialDraft } from "@/components/credentials";
@@ -602,6 +603,7 @@ function TermCard({ settings }: { settings: PublicSettings }) {
     activeTerm: settings.activeTerm ?? "",
     ticketAt: isoToChicagoLocal(settings.ticketAt),
     ticketAuto: settings.ticketAuto,
+    classStanding: settings.classStanding ?? "",
   });
   const action = useAction();
   const detect = useAction();
@@ -619,9 +621,15 @@ function TermCard({ settings }: { settings: PublicSettings }) {
     // Only send the ticket when it was edited, so a round trip through the minute-precision field never reads as a manual change.
     if (form.value.ticketAt !== savedLocal) patch.ticketAt = iso;
     if (form.value.ticketAuto !== settings.ticketAuto || patch.ticketAt !== undefined) patch.ticketAuto = form.value.ticketAuto;
+    if (form.value.classStanding !== (settings.classStanding ?? "")) patch.classStanding = (form.value.classStanding || null) as ClassStanding | null;
     const next = await action.run("save", () => saveSettings(patch));
     if (!next) return false;
-    form.commit({ activeTerm: next.activeTerm ?? "", ticketAt: isoToChicagoLocal(next.ticketAt), ticketAuto: next.ticketAuto });
+    form.commit({
+      activeTerm: next.activeTerm ?? "",
+      ticketAt: isoToChicagoLocal(next.ticketAt),
+      ticketAuto: next.ticketAuto,
+      classStanding: next.classStanding ?? "",
+    });
     return true;
   }
   usePending("term", { dirty: form.dirty, save, reset: () => (form.reset(), action.setError(null)) });
@@ -683,6 +691,15 @@ function TermCard({ settings }: { settings: PublicSettings }) {
                 </Button>
               )}
             </div>
+          </Field>
+          <Field label="Class standing" htmlFor="class-standing" hint={mode !== "simulated" ? "Read from Banner with the time ticket" : undefined}>
+            <Select
+              id="class-standing"
+              value={form.value.classStanding || undefined}
+              onValueChange={classStanding => form.set({ classStanding })}
+              placeholder="Not known yet"
+              options={STANDINGS.map(value => ({ value, label: STANDING_LABEL[value] }))}
+            />
           </Field>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
