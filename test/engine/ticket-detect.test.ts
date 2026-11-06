@@ -121,6 +121,12 @@ function setup(read: ((term: string) => Promise<TicketParse>) | null, start = Da
 const found = (start: string, end: string | null = null): TicketParse => ({ status: "found", windows: [{ start, end }] });
 
 describe("TicketDetector", () => {
+  test("records the class standing from the same page, even when no ticket is found", async () => {
+    const t = setup(async () => ({ status: "unreadable", standing: "junior" }));
+    await t.detector.detect("120271", { manual: true });
+    expect(t.settings.classStanding).toBe("junior");
+  });
+
   test("no automatic check before setup saves a login", async () => {
     const t = setup(async () => found(iso(2026, 11, 9, 7)));
     t.set({ password: null });

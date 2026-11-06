@@ -1,6 +1,9 @@
 // Shared contract between backend modules, the API, and the web UI.
 // Keep this file free of runtime imports so the browser bundle can import it.
 
+import type { ClassStanding } from "./standing";
+export type { ClassStanding };
+
 export type Mode = "simulated" | "rehearsal" | "live";
 
 export interface Term {
@@ -177,6 +180,7 @@ export interface Settings {
   ticketSource: "manual" | "banner" | null; // where ticketAt came from (server-managed)
   ticketCheckedAt: number | null; // last Banner check (server-managed)
   ticketCheckedTerm: string | null; // term of the last Banner check (server-managed)
+  classStanding: ClassStanding | null; // read from Banner with the time ticket, or set by hand
   liveEnabled: boolean;
   liveTerm: string | null;
   swapsUnlocked: boolean;
@@ -212,10 +216,14 @@ export interface TicketWindow {
 }
 
 /** What the Prepare for Registration page said about the time ticket. */
-export type TicketParse =
+export type TicketParse = (
   | { status: "found"; windows: TicketWindow[] }
   | { status: "none" } // Banner says there is no time ticket
-  | { status: "unreadable" };
+  | { status: "unreadable" }
+) & {
+  /** "Your class standing for registration purposes is Junior", read from the same page. */
+  standing?: ClassStanding | null;
+};
 
 export interface TicketDetectResult {
   term: string;
@@ -394,6 +402,7 @@ export interface CourseGrades {
 export interface GenEdHit extends SearchHit {
   matched: string[]; // which of the requested codes this course carries
   prereq: string | null; // prerequisite text from the catalog, null when the course lists none
+  standingOnly: ClassStanding | null; // the prerequisite only asks for this class standing (or higher)
 }
 
 export interface SearchHit extends CourseSummary {

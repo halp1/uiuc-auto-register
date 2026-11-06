@@ -143,6 +143,8 @@ export class TicketDetector {
     const sameTerm = settings.activeTerm === term;
     const mayApply = sameTerm && (settings.ticketAuto || opts.manual);
     const patch: Partial<Settings> = { ticketCheckedAt: now, ticketCheckedTerm: term };
+    // Standing is per student, not per term, so any term's page keeps it current.
+    if (parsed.standing && parsed.standing !== settings.classStanding) patch.classStanding = parsed.standing;
 
     if (parsed.status === "found") {
       const window = currentWindow(parsed.windows, now);

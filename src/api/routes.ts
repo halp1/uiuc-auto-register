@@ -5,6 +5,7 @@ import { isMode } from "../core/config";
 import { isTermCode, termLabel } from "../core/terms";
 import { PLAN_LIMITS } from "../core/db";
 import { isGenEdCode } from "../core/gened";
+import { isStanding } from "../core/standing";
 import {
   NOTIFY_EVENTS,
   ONBOARDING_STEPS,
@@ -199,6 +200,10 @@ function validSettingsPatch(raw: any, current: Settings): Partial<Settings> {
     }
   }
   if (p.ticketAuto !== undefined) patch.ticketAuto = Boolean(p.ticketAuto);
+  if (p.classStanding !== undefined) {
+    if (p.classStanding !== null && !isStanding(p.classStanding)) throw new HttpError(400, "Unknown class standing.");
+    patch.classStanding = p.classStanding;
+  }
   if (p.discordToken !== undefined) {
     if (p.discordToken !== null && (typeof p.discordToken !== "string" || p.discordToken.trim().length < 30))
       throw new HttpError(400, "That does not look like a Discord bot token.");
@@ -465,7 +470,7 @@ export function apiRoutes(s: AppServices) {
         if (sort !== "gpa" && sort !== "matched" && sort !== "code") throw new HttpError(400, "Sort must be gpa, matched, or code.");
         const q = (url.searchParams.get("q") ?? "").trim().slice(0, 100);
         const noPrereq = url.searchParams.get("noPrereq") === "1";
-        return json(s.genEdSearch(term, { codes, match, sort, q, noPrereq }));
+        return json(s.genEdSearch(term, { codes, match, sort, q, noPrereq, standing: s.settings().classStanding }));
       },
     },
     "/api/grades/sync": {

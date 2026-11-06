@@ -6,6 +6,7 @@ import type { CourseDetail, GenEdHit, Meeting, SearchHit, Section } from "../cor
 import type { LinkedSections } from "../banner/linked";
 import type { Explorer } from "./explorer";
 import { getCourseGrades } from "./grades";
+import { meetsStanding, standingOnlyPrereq, type ClassStanding } from "../core/standing";
 import { resolvePrereq } from "./prereq";
 import { getStoredCourse, getStoredSections, saveCourses, storedLinkedOptions } from "./store";
 
@@ -226,8 +227,13 @@ export interface GenEdQuery {
   match?: "all" | "any";
   q?: string;
   sort?: "gpa" | "matched" | "code";
-  /** Only courses with no listed prerequisite. Courses whose cross-listed source is unknown are left out. */
+  /**
+   * Only courses with no listed prerequisite. A prerequisite that only asks for a class standing counts
+   * as met when `standing` meets it, or when the standing is unknown. Courses whose cross-listed source
+   * is unknown are left out.
+   */
   noPrereq?: boolean;
+  standing?: ClassStanding | null;
   limit?: number;
 }
 
@@ -275,16 +281,22 @@ export function genEdSearch(store: Store, term: string, query: GenEdQuery): { hi
     const found = describe.get(term, subject, number) as Row | null;
     return found ? ((found.description as string | null) ?? "") : undefined;
   };
-  const withPrereq = rows.map(row => ({ row, prereq: resolvePrereq(row.description, lookup) }));
-  const kept = query.noPrereq ? withPrereq.filter(entry => entry.prereq === null) : withPrereq;
+  const withPrereq = rows.map(row => {
+    const prereq = resolvePrereq(row.description, lookup);
+    return { row, prereq, standingOnly: prereq ? standingOnlyPrereq(prereq) : null };
+  });
+  const open = (entry: (typeof withPrereq)[number]) =>
+    entry.prereq === null || (entry.standingOnly !== null && (!query.standing || meetsStanding(query.standing, entry.standingOnly)));
+  const kept = query.noPrereq ? withPrereq.filter(open) : withPrereq;
   return {
     total: kept.length,
-    hits: kept.slice(0, limit).map(({ row, prereq }) => ({
+    hits: kept.slice(0, limit).map(({ row, prereq, standingOnly }) => ({
       ...summaryFromRow(row),
       matchedCrn: null,
       matchedInstructor: null,
       matched: String(row.matched ?? "").split(",").filter(Boolean).sort(),
       prereq: prereq ?? null,
+      standingOnly,
     })),
   };
 }

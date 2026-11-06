@@ -14,6 +14,7 @@ import type { SeatInfo, SessionState, Settings, SystemStatus } from "../core/typ
 import { courseForCrn } from "../catalog/store";
 import { AnonymousSeatSource, BANNER_BASE, MEP_CODE, looksLikeLogin, parseEnrollmentInfo, type FetchLike } from "./enrollment";
 import { installInterceptor, type AuthorizedBatch, type InstalledInterceptor } from "./interceptor";
+import { parseStandingText } from "../core/standing";
 import { currentWindow, parseTicket, type TicketParse } from "./ticket";
 import type { RegistrationModel } from "./guard";
 import {
@@ -733,8 +734,9 @@ export class BannerSessionManager implements SessionManager {
         throw new BannerSessionError("login_required");
       }
       const parsed = parseTicket(text);
-      if (parsed.status === "unreadable" && this.blockedTotal > blockedBefore) return { status: "unreadable" };
-      return parsed;
+      const standing = parseStandingText(text);
+      if (parsed.status === "unreadable" && this.blockedTotal > blockedBefore) return { status: "unreadable", standing };
+      return { ...parsed, standing };
     } finally {
       this.blockContext = null;
       this.readingTicket = false;

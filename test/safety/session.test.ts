@@ -399,10 +399,26 @@ describe("readTicket", () => {
     return { ...session, browser, fetched };
   }
 
-  test("selects the term in preReg mode, opens Prepare for Registration, and parses the ticket", async () => {
-    const t = await ticketManager("Time Tickets\nRegistration Time Ticket\n11/09/2026 07:00 AM - 01/29/2027 11:59 PM");
+  test("selects the term in preReg mode, opens Prepare for Registration, and parses the ticket and standing", async () => {
+    // Text as Banner's Registration Status panel shows it.
+    const t = await ticketManager(
+      [
+        "Registration Status",
+        "Term: Spring 2027 - Urbana-Champaign",
+        "Your Student Status permits registration.",
+        "You have no holds which prevent registration.",
+        "Time tickets do not allow registration at this time. Please register within these times: 11/09/2026 07:00 AM - 01/29/2027 11:59 PM",
+        "Earned Hours",
+        "You have Earned Hours for Level: Undergrad - Urbana-Champaign, Institution Hours: 6, Transfer Hours: 56",
+        "Your class standing for registration purposes is Junior",
+      ].join("\n"),
+    );
     const parsed = await t.manager.readTicket("120271");
-    expect(parsed).toEqual({ status: "found", windows: [{ start: "2026-11-09T13:00:00.000Z", end: "2027-01-30T05:59:00.000Z" }] });
+    expect(parsed).toEqual({
+      status: "found",
+      windows: [{ start: "2026-11-09T13:00:00.000Z", end: "2027-01-30T05:59:00.000Z" }],
+      standing: "junior",
+    });
     expect(t.fetched[0]).toMatchObject({ method: "POST", form: { term: "120271" } });
     expect(t.fetched[0]!.url).toEndWith("/term/search?mode=preReg");
     expect(t.browser.navigations).toEqual([PREP]);

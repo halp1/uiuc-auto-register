@@ -3,6 +3,7 @@ import { Store } from "../../src/core/db";
 import { Explorer, parseCascade, parseCourseDetail, parseSubjects, to24h } from "../../src/catalog/explorer";
 import { parseGradeData, replaceGrades } from "../../src/catalog/grades";
 import { parsePrereq } from "../../src/catalog/prereq";
+import { parseStandingText, standingOnlyPrereq } from "../../src/core/standing";
 import { courseDetail, genEdSearch, search } from "../../src/catalog/search";
 import { replaceSubject, saveCourses } from "../../src/catalog/store";
 import { CatalogSync, cleanTermDescription, parseTerms } from "../../src/catalog/sync";
@@ -128,6 +129,53 @@ describe("gen eds", () => {
     [null, { kind: "none" }],
   ])("parsePrereq(%p)", (description, expected) => {
     expect(parsePrereq(description)).toEqual(expected as ReturnType<typeof parsePrereq>);
+  });
+
+  test.each([
+    ["Sophomore standing", "sophomore"],
+    ["Junior status", "junior"],
+    ["Restricted to Sophomore or above class standing", "sophomore"],
+    ["Restricted to Junior, Senior or Graduate standing", "junior"],
+    ["Junior standing or consent of instructor", "junior"],
+    ["Two courses in Gender and Women's Studies at the 200-400 levels; or junior standing; or consent of instructor", "junior"],
+    ["Graduate standing", "graduate"],
+    // More than a standing: a course, a major, hours, GPA.
+    ["Junior status and one of the following: AFRO 224, or HIST 275", null],
+    ["PSYC 100 and junior standing, or consent of instructor", null],
+    ["Graduate standing in Sociology and consent of advisor", null],
+    ["Junior or senior standing; 12 hours in anthropology; consent of instructor", null],
+    ["Open to juniors and seniors with a grade-point average of 3.0", null],
+    ["AFRO 100 or consent of instructor", null],
+  ])("standingOnlyPrereq(%p) is %p", (text, expected) => {
+    expect(standingOnlyPrereq(text)).toBe(expected as ReturnType<typeof standingOnlyPrereq>);
+  });
+
+  test.each([
+    ["Your class standing for registration purposes is Junior", "junior"],
+    ["Your class standing for registration purposes is Sophomore\nEarned Hours", "sophomore"],
+    ["Class Standing: Senior", "senior"],
+    ["Earned Hours only", null],
+  ])("parseStandingText(%p)", (text, expected) => {
+    expect(parseStandingText(text)).toBe(expected as ReturnType<typeof parseStandingText>);
+  });
+
+  test("standing-only prerequisites stay when the student's standing meets them", () => {
+    const local = new Store(":memory:");
+    const course = (number: string, description: string) => ({
+      term: T, subject: "SOC", number, title: `Course ${number}`, creditHours: "3", description, scheduleInfo: null, genEds: ["1SS"], sections: [],
+    });
+    saveCourses(local, [
+      course("100", "Intro."),
+      course("200", "Methods. Prerequisite: Sophomore standing."),
+      course("300", "Seminar. Prerequisite: Junior status."),
+      course("400", "Advanced. Prerequisite: SOC 100 and junior standing."),
+    ]);
+    const open = (standing: "freshman" | "junior" | null) =>
+      genEdSearch(local, T, { codes: ["1SS"], sort: "code", noPrereq: true, standing }).hits.map(h => `${h.number}${h.standingOnly ? `:${h.standingOnly}` : ""}`);
+    expect(open("freshman")).toEqual(["100"]);
+    expect(open("junior")).toEqual(["100", "200:sophomore", "300:junior"]);
+    // Unknown standing: keep standing-only courses and let the row say what they need.
+    expect(open(null)).toEqual(["100", "200:sophomore", "300:junior"]);
   });
 
   test("resaving a subject drops gen eds of removed courses", async () => {

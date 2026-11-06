@@ -148,6 +148,7 @@ export function defaultSettings(): Settings {
     ticketSource: null,
     ticketCheckedAt: null,
     ticketCheckedTerm: null,
+    classStanding: null,
     liveEnabled: false,
     liveTerm: null,
     swapsUnlocked: false,
