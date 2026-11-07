@@ -29,6 +29,7 @@ import type {
   PlanSort,
   SearchHit,
 } from "../../src/core/types";
+import { parseCredits } from "../../src/core/credits";
 import { bundleGpa, instructorGrades, instructorKey, sectionInstructors } from "../../src/core/grades";
 import { ConfirmDialog } from "@/components/confirm";
 import { GpaBadge, GradeDisparity, gpaText } from "@/components/grades";
@@ -657,6 +658,45 @@ function CoursesSection({
 }) {
   const [sheetFor, setSheetFor] = useState<PlanCourse | null>(null);
   const live = sheetFor ? plan.courses.find(c => c.id === sheetFor.id) ?? null : null;
+
+  useEffect(() => {
+    const missing = plan.courses.filter(c => c.credits == null && !c.creditHours && c.id > 0);
+    if (!missing.length) return;
+    let cancelled = false;
+    for (const c of missing) {
+      api
+        .course(plan.term, c.subject, c.number)
+        .then(d => {
+          if (cancelled || !d) return;
+          const credits = parseCredits(d.creditHours).credits;
+          if (credits != null) {
+            const current = getState().plans[plan.term]?.find(p => p.id === plan.id);
+            if (current) {
+              local.upsertPlan({
+                ...current,
+                courses: current.courses.map(pc => (pc.id === c.id ? { ...pc, credits, creditHours: d.creditHours } : pc)),
+              });
+            }
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [plan.courses, plan.id, plan.term]);
+
+  const courseCredits = (c: PlanCourse) => c.credits ?? parseCredits(c.creditHours).credits ?? 0;
+  const totalCredits = plan.courses.reduce((sum, c) => sum + courseCredits(c), 0);
+  const includedCourses = plan.courses.filter(c => c.included);
+  const includedCredits = includedCourses.reduce((sum, c) => sum + courseCredits(c), 0);
+  const creditsText =
+    totalCredits > 0
+      ? includedCredits === totalCredits
+        ? `${totalCredits} ${totalCredits === 1 ? "credit" : "credits"}`
+        : `${includedCredits} of ${totalCredits} credits`
+      : null;
+
   return (
     <section aria-labelledby="courses-title" className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
@@ -664,6 +704,7 @@ function CoursesSection({
           Courses
         </h2>
         <span className="text-xs text-fg-subtle tabular-nums">{plan.courses.length}</span>
+        {creditsText && <span className="text-xs text-fg-subtle tabular-nums">({creditsText})</span>}
       </div>
       <AddCourse plan={plan} mutate={mutate} />
       {plan.courses.length === 0 ? (
@@ -796,6 +837,8 @@ function AddCourse({ plan, mutate }: { plan: Plan; mutate: (fn: () => Promise<Pl
       locked: null,
       backups: true,
       position: plan.courses.length,
+      creditHours: hit.creditHours,
+      credits: parseCredits(hit.creditHours).credits,
     };
     local.upsertPlan({ ...plan, courses: [...plan.courses, pending] });
     try {

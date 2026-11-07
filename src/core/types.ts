@@ -441,6 +441,8 @@ export interface PlanCourse {
   locked: string[] | null; // one exact bundle, or null
   backups: boolean; // add fitting alternates as lower ranked bundles when targeting
   position: number;
+  credits?: number | null;
+  creditHours?: string | null;
 }
 
 export interface PlanPick {

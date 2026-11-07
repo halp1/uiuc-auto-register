@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ephemeralCipher, loadKeyFile, makeCipher, type Cipher } from "./secrets";
+import { parseCredits } from "./credits";
 import {
   NOTIFY_EVENTS,
   type AnyFilters,
@@ -599,7 +600,17 @@ export class Store {
 
   // ---------- schedule plans ----------
   private planFromRow(row: Row): Plan {
-    const courses = (this.db.query("SELECT * FROM plan_courses WHERE plan_id = ? ORDER BY position, id").all(row.id) as Row[]).map(
+    const courses = (
+      this.db
+        .query(
+          `SELECT pc.*, cc.credit_hours
+           FROM plan_courses pc
+           LEFT JOIN cat_courses cc ON cc.term = ? AND cc.subject = pc.subject AND cc.number = pc.number
+           WHERE pc.plan_id = ?
+           ORDER BY pc.position, pc.id`,
+        )
+        .all(row.term, row.id) as Row[]
+    ).map(
       (course): PlanCourse => ({
         id: course.id,
         planId: course.plan_id,
@@ -611,6 +622,8 @@ export class Store {
         locked: course.locked ? JSON.parse(course.locked) : null,
         backups: Boolean(course.backups),
         position: course.position,
+        creditHours: course.credit_hours ?? null,
+        credits: parseCredits(course.credit_hours).credits,
       }),
     );
     return {

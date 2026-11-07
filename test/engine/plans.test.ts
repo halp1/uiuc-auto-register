@@ -59,6 +59,14 @@ describe("store", () => {
     store.deletePlan(plan.id);
     expect(store.db.query("SELECT COUNT(*) AS n FROM plan_courses").get()).toEqual({ n: 0 });
   });
+
+  test("plan courses load credit hours and parsed credits from catalog", () => {
+    const plan = planWith(["CS", "225"], ["MATH", "241"]);
+    const [cs225, math241] = plan.courses;
+    expect(cs225!.credits).toBe(4);
+    expect(cs225!.creditHours).toBe("4 hours");
+    expect(math241!.credits).toBe(4);
+  });
 });
 
 describe("generate", () => {

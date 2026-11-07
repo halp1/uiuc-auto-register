@@ -2,6 +2,7 @@
 import type { RehearsalReport } from "../../src/core/contracts";
 import { bundleGpa, instructorKey } from "../../src/core/grades";
 import { meetsStanding, standingOnlyPrereq } from "../../src/core/standing";
+import { parseCredits } from "../../src/core/credits";
 import {
   NOTIFY_EVENTS,
   type AppEvent,
@@ -1084,6 +1085,8 @@ function planCourse(plan: Plan, subject: string, number: string): PlanCourse {
     locked: null,
     backups: true,
     position: plan.courses.length,
+    creditHours: c?.credits ?? null,
+    credits: parseCredits(c?.credits).credits,
   };
 }
 
