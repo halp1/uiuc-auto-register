@@ -10,6 +10,7 @@ import type {
   CourseDetail,
   GenEdHit,
   Plan,
+  PlanGenEdResult,
   PlanGenerateResult,
   PlanPick,
   PublicSettings,
@@ -45,6 +46,8 @@ export interface AppServices {
   /** Schedule planner. Both throw PlanError (src/engine/plans.ts) with an HTTP status. */
   planGenerate(planId: number): Promise<PlanGenerateResult>;
   planTarget(planId: number, picks: PlanPick[]): Promise<{ plan: Plan; wanted: WantedCourse[] }>;
+  /** Gen eds whose sections fit the plan. */
+  planGenEds(planId: number, query: GenEdQuery): Promise<PlanGenEdResult>;
   terms(): Promise<Term[]>;
   status(): SystemStatus;
   settings(): Settings;

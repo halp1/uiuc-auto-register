@@ -222,6 +222,7 @@ export async function createApp(config: Config, options: AppOptions = {}): Promi
     },
     planGenerate: planId => plans.generate(planId),
     planTarget: (planId, picks) => plans.target(planId, picks),
+    planGenEds: (planId, query) => plans.genEds(planId, query),
     terms: () => catalog.terms(),
     status,
     settings,

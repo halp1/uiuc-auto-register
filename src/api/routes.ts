@@ -22,6 +22,7 @@ import {
   type Snapshot,
   type StreamMessage,
 } from "../core/types";
+import type { GenEdQuery } from "../catalog/search";
 import { PlanError } from "../engine/plans";
 import { TicketDetectError } from "../engine/ticket-detect";
 import { normalizeWebhookUrl } from "../notify/webhook";
@@ -414,6 +415,18 @@ export function apiRoutes(s: AppServices) {
     if (!p) throw new HttpError(404, "That plan no longer exists.");
     return p;
   };
+  /** Gen ed search parameters shared by the finder and the plan's gen ed search. */
+  const genEdQuery = (url: URL): GenEdQuery => {
+    const codes = [...new Set((url.searchParams.get("codes") ?? "").split(",").map(c => c.trim().toUpperCase()).filter(Boolean))];
+    if (!codes.length || !codes.every(isGenEdCode)) throw new HttpError(400, "Pick one or more gen ed requirements.");
+    const match = url.searchParams.get("match") ?? "all";
+    if (match !== "all" && match !== "any") throw new HttpError(400, "Match must be all or any.");
+    const sort = url.searchParams.get("sort") ?? "gpa";
+    if (sort !== "gpa" && sort !== "matched" && sort !== "code") throw new HttpError(400, "Sort must be gpa, matched, or code.");
+    const q = (url.searchParams.get("q") ?? "").trim().slice(0, 100);
+    const noPrereq = url.searchParams.get("noPrereq") === "1";
+    return { codes, match, sort, q, noPrereq, standing: s.settings().classStanding };
+  };
   const publishPlans = (term: string) => s.bus.publish({ type: "plans", term, plans: s.store.listPlans(term) });
   /** Respond with the fresh plan and broadcast the term's plans. */
   const planChanged = (pid: number) => {
@@ -462,15 +475,7 @@ export function apiRoutes(s: AppServices) {
         const url = new URL(req.url);
         const term = url.searchParams.get("term") ?? s.settings().activeTerm;
         if (!term || !isTermCode(term)) throw new HttpError(400, "Pick a term first.");
-        const codes = [...new Set((url.searchParams.get("codes") ?? "").split(",").map(c => c.trim().toUpperCase()).filter(Boolean))];
-        if (!codes.length || !codes.every(isGenEdCode)) throw new HttpError(400, "Pick one or more gen ed requirements.");
-        const match = url.searchParams.get("match") ?? "all";
-        if (match !== "all" && match !== "any") throw new HttpError(400, "Match must be all or any.");
-        const sort = url.searchParams.get("sort") ?? "gpa";
-        if (sort !== "gpa" && sort !== "matched" && sort !== "code") throw new HttpError(400, "Sort must be gpa, matched, or code.");
-        const q = (url.searchParams.get("q") ?? "").trim().slice(0, 100);
-        const noPrereq = url.searchParams.get("noPrereq") === "1";
-        return json(s.genEdSearch(term, { codes, match, sort, q, noPrereq, standing: s.settings().classStanding }));
+        return json(s.genEdSearch(term, genEdQuery(url)));
       },
     },
     "/api/grades/sync": {
@@ -659,6 +664,9 @@ export function apiRoutes(s: AppServices) {
         if (!s.store.deletePlanCourse(p.id, id(req.params.cid))) throw new HttpError(404, "That course is not in this plan.");
         return planChanged(p.id);
       },
+    },
+    "/api/plans/:id/geneds": {
+      GET: async req => json(await s.planGenEds(plan(id(req.params.id)).id, genEdQuery(new URL(req.url)))),
     },
     "/api/plans/:id/generate": {
       POST: async req => json(await s.planGenerate(plan(id(req.params.id)).id)),

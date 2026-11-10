@@ -192,7 +192,7 @@ function internallyValid(list: SchedSection[]): boolean {
 }
 
 /** True when the option fits around the fixed blocks and breaks. */
-function fits(list: SchedSection[], fixed: SchedSection[], breaks: PlanBreak[]): boolean {
+export function fitsAround(list: SchedSection[], fixed: SchedSection[], breaks: PlanBreak[]): boolean {
   return internallyValid(list) && !list.some(section => breakHit(section, breaks)) && planConflicts(list, fixed).length === 0;
 }
 
@@ -211,7 +211,7 @@ export function generateSchedules(input: GenerateInput): GenerateOutput {
   const prepared = input.courses.map(course =>
     course.options
       .map(crns => ({ crns, sections: sectionsOf(crns, input.sections) }))
-      .filter(option => fits(option.sections, input.fixed, input.breaks)),
+      .filter(option => fitsAround(option.sections, input.fixed, input.breaks)),
   );
   const viable = prepared.map(options => options.length);
   if (input.courses.length === 0 || viable.some(count => count === 0)) {
@@ -294,7 +294,7 @@ export function backupBundles(input: {
   return input.options
     .filter(crns => [...crns].sort().join(",") !== chosenKey)
     .map((crns, index) => ({ crns, index, sections: sectionsOf(crns, input.sections) }))
-    .filter(option => fits(option.sections, blockers, input.breaks))
+    .filter(option => fitsAround(option.sections, blockers, input.breaks))
     .map(option => ({ ...option, seats: scheduleStats(option.sections).minSeats }))
     .sort((a, b) => nullsLast(a.seats, b.seats, -1) || a.index - b.index)
     .slice(0, input.cap ?? GENERATE_LIMITS.backups)

@@ -405,6 +405,16 @@ export interface GenEdHit extends SearchHit {
   standingOnly: ClassStanding | null; // the prerequisite only asks for this class standing (or higher)
 }
 
+/** Gen eds that fit a plan: at least one section combination leaves the plan with a schedule. */
+export interface PlanGenEdResult {
+  hits: (GenEdHit & { fits: number })[]; // fits: section combinations that fit
+  total: number;
+  /** False when the plan's own courses have no schedule, so hits only fit around breaks and registered classes. */
+  planFits: boolean;
+  /** The time budget ran out (or the candidate list was capped) before every course was checked. */
+  truncated: boolean;
+}
+
 export interface SearchHit extends CourseSummary {
   matchedCrn: string | null;
   matchedInstructor: string | null;

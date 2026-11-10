@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { courseDetail } from "../../src/catalog/search";
+import { saveCourses } from "../../src/catalog/store";
 import { Bus } from "../../src/core/bus";
 import { Store } from "../../src/core/db";
 import { Events } from "../../src/core/events";
@@ -258,5 +259,49 @@ describe("target", () => {
     expect(error.status).toBe(400);
     const ok = await service.target(plan.id, [picks()[1]!]);
     expect(ok.wanted.map(w => w.subject)).toEqual(["MATH"]);
+  });
+});
+
+describe("gen eds that fit", () => {
+  // One-section-per-meeting gen eds around CS 225 (lectures MWF 11:00, labs R 9:00 to 16:50).
+  const genEd = (number: string, description: string, ...meetings: [string, string, string, string][]) => ({
+    term: TERM, subject: "PHIL", number, title: `Phil ${number}`, creditHours: "3", description, scheduleInfo: null, genEds: ["1HP"],
+    sections: meetings.map(([crn, days, start, end]) => ({
+      crn, section: crn.slice(-2), type: "LEC", typeName: "Lecture", partOfTerm: "1",
+      meetings: [{ type: "LEC", typeName: "Lecture", days, start, end, building: null, room: null, instructors: [] }],
+    })),
+  });
+  const found = async (planId: number, noPrereq = false) =>
+    (await service.genEds(planId, { codes: ["1HP"], sort: "code", noPrereq })).hits.map(h => `${h.number}:${h.fits}`);
+
+  test("keeps courses with a section that fits the plan, breaks, registered classes, and prerequisites", async () => {
+    saveCourses(store, [
+      genEd("100", "Intro.", ["90001", "MWF", "11:00", "11:50"]), // always on top of the CS 225 lecture
+      genEd("101", "Ethics.", ["90011", "MWF", "11:00", "11:50"], ["90012", "TR", "14:00", "15:15"], ["90013", "TR", "09:30", "10:45"]),
+      genEd("102", "Logic. Prerequisite: PHIL 101.", ["90021", "MW", "15:00", "16:20"]),
+      genEd("103", "Mind.", ["90031", "M", "08:00", "08:50"]),
+      genEd("225", "Already planned.", ["90041", "F", "15:00", "15:50"]),
+    ]);
+    const plan = planWith(["CS", "225"], ["PHIL", "225"]);
+    // 101: TR 14:00 still leaves the R 9:00 and 11:00 labs. TR 9:30 leaves R 11:00 and later.
+    expect(await found(plan.id)).toEqual(["101:2", "102:1", "103:1"]);
+    expect(await found(plan.id, true)).toEqual(["101:2", "103:1"]);
+
+    store.updatePlan(plan.id, { breaks: [{ days: ["M"], start: "08:00", end: "09:00" }] });
+    store.addScheduleSnapshot(TERM, ["90021"], "rehearsal"); // PHIL 102 registered, and its MW 15:00 block stays put
+    expect(await found(plan.id)).toEqual(["101:2"]);
+
+    store.upsertSeat({ term: TERM, crn: "90012", available: 0, max: 30, enrolled: 30, checkedAt: now });
+    store.updatePlan(plan.id, { openOnly: true });
+    expect(await found(plan.id)).toEqual(["101:1"]);
+  });
+
+  test("a plan with no schedule reports it and still checks breaks and registered classes", async () => {
+    saveCourses(store, [genEd("101", "Ethics.", ["90012", "TR", "14:00", "15:15"])]);
+    const plan = planWith(["CS", "225"]);
+    store.updatePlan(plan.id, { breaks: [{ days: ["R"], start: "08:00", end: "18:00" }] });
+    const result = await service.genEds(plan.id, { codes: ["1HP"] });
+    expect(result.planFits).toBe(false);
+    expect(result.hits).toEqual([]);
   });
 });

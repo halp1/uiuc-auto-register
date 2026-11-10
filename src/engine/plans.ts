@@ -9,14 +9,27 @@ import type {
   Plan,
   PlanCourse,
   PlanCourseStatus,
+  PlanGenEdResult,
   PlanGenerateResult,
   PlanPick,
   PlanSection,
   WantedCourse,
 } from "../core/types";
-import { courseForCrn, getStoredSections, sectionsByCrn } from "../catalog/store";
+import { genEdSearch, type GenEdQuery } from "../catalog/search";
+import { courseForCrn, getStoredSections, sectionsByCrn, storedLinkedOptions } from "../catalog/store";
 import { bundleGpa } from "../core/grades";
-import { backupBundles, breakHit, courseOptions, generateSchedules, planConflicts, sectionsConflict, type SchedSection } from "./schedule";
+import {
+  backupBundles,
+  breakHit,
+  courseOptions,
+  fitsAround,
+  GENERATE_LIMITS,
+  generateSchedules,
+  isTimed,
+  planConflicts,
+  sectionsConflict,
+  type SchedSection,
+} from "./schedule";
 
 export const SEAT_FRESH_MS = 10 * 60 * 1000;
 const DETAIL_CONCURRENCY = 3;
@@ -61,6 +74,13 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 }
 
 const courseKey = (subject: string, number: string) => `${subject.toUpperCase()} ${number}`;
+
+/** Timed meetings as one string: sections with the same key conflict with exactly the same things. */
+const timeKey = (sections: SchedSection[]) =>
+  sections
+    .flatMap(section => section.meetings.filter(isTimed).map(m => `${section.partOfTerm ?? ""}|${m.days}|${m.start}|${m.end}`))
+    .sort()
+    .join(";");
 
 export class PlanService {
   private now: () => number;
@@ -186,6 +206,81 @@ export class PlanService {
       sections,
       generatedAt: this.now(),
     };
+  }
+
+  /**
+   * Gen ed search narrowed to courses that fit this plan: some section combination of the course fits
+   * around breaks, registered classes, and at least one schedule of the plan's included courses.
+   * Courses already in the plan or registered are left out. Reads stored sections and seats only, so
+   * a course without Banner linked data is combined by section letter, like the watchlist does.
+   */
+  async genEds(planId: number, query: Omit<GenEdQuery, "limit">, limit = 200): Promise<PlanGenEdResult> {
+    const { store } = this.deps;
+    const plan = this.plan(planId);
+    const fixed = this.fixedCrns(plan);
+    const registered = this.registeredKeys(plan, fixed);
+    const loaded = await this.loadCourses(plan, registered, { seats: false });
+    const active = loaded.filter(entry => entry.status === "ok");
+    const sched = new Map<string, SchedSection>();
+    for (const entry of active) for (const section of entry.detail!.sections) sched.set(section.crn, section);
+    const fixedSections = this.fixedSections(plan.term, fixed);
+
+    // Every distinct set of busy times the plan's courses can leave. An empty plan leaves one: nothing.
+    let base: SchedSection[][] = [[]];
+    let planFits = true;
+    let truncated = false;
+    if (active.length) {
+      const output = generateSchedules({
+        courses: active.map(entry => ({ subject: entry.course.subject, number: entry.course.number, options: entry.options })),
+        sections: sched,
+        fixed: fixedSections,
+        breaks: plan.breaks,
+        limit: GENERATE_LIMITS.maxSchedules,
+        now: this.now,
+      });
+      truncated = output.truncated;
+      const unique = new Map<string, SchedSection[]>();
+      for (const schedule of output.schedules) {
+        const sections = schedule.picks.flatMap(pick => pick.crns.map(crn => sched.get(crn) ?? { crn, meetings: [], partOfTerm: null }));
+        unique.set(timeKey(sections), sections);
+      }
+      if (unique.size) base = [...unique.values()];
+      else planFits = false;
+    }
+
+    const started = this.now();
+    const skip = new Set([...plan.courses.map(course => courseKey(course.subject, course.number)), ...registered]);
+    const candidates = genEdSearch(store, plan.term, { ...query, limit: 500 });
+    if (candidates.total > candidates.hits.length) truncated = true;
+    const verdict = new Map<string, boolean>();
+    const hits: PlanGenEdResult["hits"] = [];
+    for (const hit of candidates.hits) {
+      if (skip.has(courseKey(hit.subject, hit.number))) continue;
+      if (this.now() - started > GENERATE_LIMITS.budgetMs) {
+        truncated = true;
+        break;
+      }
+      const stored = getStoredSections(store, plan.term, hit.subject, hit.number);
+      if (!stored.length) continue;
+      const sections = stored.map(section => ({ ...section, seats: store.getSeat(plan.term, section.crn) }));
+      const byCrn = new Map(sections.map(section => [section.crn, section]));
+      const options = courseOptions({ sections, linkedOptions: storedLinkedOptions(store, plan.term, stored.map(s => s.crn)) });
+      let fits = 0;
+      for (const crns of options) {
+        const list = crns.map(crn => byCrn.get(crn) ?? { crn, meetings: [], partOfTerm: null, seats: null });
+        // With open sections only, skip combinations with a section known to be full. Unknown seats still count.
+        if (plan.openOnly && list.some(section => section.seats && section.seats.available <= 0)) continue;
+        const key = timeKey(list);
+        let ok = verdict.get(key);
+        if (ok === undefined) {
+          ok = fitsAround(list, fixedSections, plan.breaks) && base.some(busy => planConflicts(list, busy).length === 0);
+          verdict.set(key, ok);
+        }
+        if (ok) fits++;
+      }
+      if (fits) hits.push({ ...hit, fits });
+    }
+    return { hits: hits.slice(0, limit), total: hits.length, planFits, truncated };
   }
 
   /**

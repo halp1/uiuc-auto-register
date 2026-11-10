@@ -192,6 +192,13 @@ test("schedule planner routes: plans, courses, generate, target", async () => {
     const after = frames.slice(framesBeforeTarget).map(frame => frame.type);
     expect(after).toEqual(expect.arrayContaining(["wanted", "plans"]));
 
+    // Gen eds that fit: shares the gen ed validation, leaves out courses already in the plan.
+    expect((await call("GET", `/api/plans/${planId}/geneds?codes=NOPE`)).status).toBe(400);
+    const fit = await call("GET", `/api/plans/${planId}/geneds?codes=1QR2`);
+    expect(fit.status).toBe(200);
+    expect(fit.json).toMatchObject({ planFits: true });
+    expect(fit.json.hits.map((h: any) => `${h.subject} ${h.number}`)).not.toContain("MATH 241");
+
     expect((await call("DELETE", `/api/plans/${planId}`)).status).toBe(200);
   } finally {
     unsubscribe();
