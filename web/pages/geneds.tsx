@@ -1,9 +1,9 @@
-import { Check, ChevronRight, Ellipsis, ExternalLink, Plus, RefreshCw, Search } from "lucide-react";
+import { ChevronRight, Ellipsis, ExternalLink, Plus, RefreshCw, Search } from "lucide-react";
 import { DropdownMenu as DM } from "radix-ui";
 import { useEffect, useRef, useState } from "react";
-import { genEdGroups } from "../../src/core/gened";
 import type { GenEdHit } from "../../src/core/types";
-import { CourseGpa, GenEdPills } from "@/components/grades";
+import { GENED_SORTS, GenEdHitInfo, GenEdPicker, NoPrereqChip, toggleCode, useGenEdResults } from "@/components/geneds";
+import { CourseGpa } from "@/components/grades";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -13,9 +13,9 @@ import {
   DropdownMenuTrigger,
   menuContentClass,
 } from "@/components/ui/dropdown-menu";
-import { FilterChip, InlineError, PageHeader } from "@/components/ui/list";
+import { InlineError, PageHeader } from "@/components/ui/list";
 import { Segmented } from "@/components/ui/segmented";
-import { meetsStanding, STANDING_LABEL, type ClassStanding } from "../../src/core/standing";
+import type { ClassStanding } from "../../src/core/standing";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
@@ -23,20 +23,6 @@ import { termName } from "@/lib/format";
 import { coursePath, genEdsPath, hrefWithMock, linkClick, navigate, type GenEdMatch, type GenEdSort, type RouteMatch } from "@/lib/router";
 import { local, useStore } from "@/lib/store";
 import { cn, errorMessage } from "@/lib/utils";
-
-const SORTS: { value: GenEdSort; label: string }[] = [
-  { value: "gpa", label: "GPA" },
-  { value: "matched", label: "Most requirements" },
-  { value: "code", label: "Code" },
-];
-
-/** Single requirement categories (the two compositions) read better as one group. */
-const GROUPS = (() => {
-  const all = genEdGroups();
-  const single = all.filter(g => g.reqs.length === 1 && g.reqs[0]!.label === g.label);
-  const rest = all.filter(g => !single.includes(g));
-  return single.length > 1 ? [{ category: "COMP", label: "Composition", reqs: single.flatMap(g => g.reqs) }, ...rest] : all;
-})();
 
 type Route = Extract<RouteMatch, { name: "geneds" }>;
 
@@ -47,9 +33,6 @@ export function GenEdsPage({ route }: { route: Route }) {
   const standing = useStore(s => s.settings?.classStanding ?? null);
   const { codes, match, sort, noPrereq } = route;
   const [q, setQ] = useState(route.q);
-  const [result, setResult] = useState<{ hits: GenEdHit[]; total: number } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const query = q.trim();
@@ -62,34 +45,11 @@ export function GenEdsPage({ route }: { route: Route }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
-  const key = codes.join(",");
-  useEffect(() => {
-    if (!term || codes.length === 0) {
-      setResult(null);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    setLoading(true);
-    const controller = new AbortController();
-    const id = setTimeout(async () => {
-      try {
-        const res = await api.genEds(term, { codes, match, q: query, sort, noPrereq }, controller.signal);
-        if (controller.signal.aborted) return;
-        setResult(res);
-        setError(null);
-      } catch (e) {
-        if (!controller.signal.aborted) setError(errorMessage(e));
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    }, 200);
-    return () => {
-      controller.abort();
-      clearTimeout(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [term, key, match, query, sort, noPrereq, standing, catalog.syncedAt]);
+  const { result, loading, error } = useGenEdResults(
+    !!term && codes.length > 0,
+    JSON.stringify([term, codes, match, query, sort, noPrereq, standing, catalog.syncedAt]),
+    signal => api.genEds(term!, { codes, match, q: query, sort, noPrereq }, signal),
+  );
 
   async function sync() {
     if (!term) return;
@@ -104,8 +64,7 @@ export function GenEdsPage({ route }: { route: Route }) {
     }
   }
 
-  const toggle = (code: string) =>
-    go({ codes: codes.includes(code) ? codes.filter(c => c !== code) : [...codes, code] });
+  const toggle = (code: string) => go({ codes: toggleCode(codes, code) });
 
   const catalogEmpty = catalog.term === term && catalog.courses === 0;
   const hits = result?.hits ?? null;
@@ -133,25 +92,7 @@ export function GenEdsPage({ route }: { route: Route }) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
-        {GROUPS.map(g => (
-          <fieldset key={g.category} className="flex min-w-0 flex-col gap-2">
-            <legend className="mb-2 text-xs text-fg-muted">{g.label}</legend>
-            <div className="flex flex-wrap gap-1.5">
-              {g.reqs.map(r => (
-                <FilterChip
-                  key={r.code}
-                  active={codes.includes(r.code)}
-                  onClick={() => toggle(r.code)}
-                  aria-label={r.label === r.categoryLabel ? r.label : `${r.categoryLabel}: ${r.label}`}
-                >
-                  {r.label}
-                </FilterChip>
-              ))}
-            </div>
-          </fieldset>
-        ))}
-      </div>
+      <GenEdPicker codes={codes} onToggle={toggle} />
 
       {codes.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
@@ -179,16 +120,8 @@ export function GenEdsPage({ route }: { route: Route }) {
               className="h-9 w-full rounded-md border border-border-strong bg-surface-2 pl-9 pr-3 text-sm text-fg placeholder:text-placeholder transition-[border-color,box-shadow] duration-150 ease-out hover:border-border-hover focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 [&::-webkit-search-cancel-button]:hidden"
             />
           </div>
-          <FilterChip
-            active={noPrereq}
-            onClick={() => go({ noPrereq: !noPrereq })}
-            className="h-9 px-3"
-            title={standing ? `Keeps courses that only need ${STANDING_LABEL[standing].toLowerCase()} standing or lower` : undefined}
-          >
-            {noPrereq && <Check aria-hidden />}
-            {standing ? `No prerequisites for a ${STANDING_LABEL[standing].toLowerCase()}` : "No prerequisites"}
-          </FilterChip>
-          <Select aria-label="Sort" className="w-48" value={sort} onValueChange={v => go({ sort: v as GenEdSort })} options={SORTS} />
+          <NoPrereqChip active={noPrereq} onToggle={() => go({ noPrereq: !noPrereq })} standing={standing} />
+          <Select aria-label="Sort" className="w-48" value={sort} onValueChange={v => go({ sort: v as GenEdSort })} options={GENED_SORTS} />
         </div>
       )}
 
@@ -243,18 +176,7 @@ function HitRow({ hit, term, standing }: { hit: GenEdHit; term: string; standing
         {hit.subject} {hit.number}
         <span className="sr-only">: {hit.title}</span>
       </a>
-      <span className="min-w-0">
-        <span className="block truncate text-sm">{hit.title}</span>
-        <GenEdPills codes={hit.genEds} matched={hit.matched} className="mt-1" />
-        {hit.prereq && (
-          <span className="mt-1 block truncate text-xs text-fg-muted" title={`Prerequisite: ${hit.prereq}`}>
-            {hit.standingOnly && standing && meetsStanding(standing, hit.standingOnly) && (
-              <Check className="mr-1 inline size-3 align-[-2px] text-ready" aria-label="Your standing meets this" />
-            )}
-            Prerequisite: {hit.prereq}
-          </span>
-        )}
-      </span>
+      <GenEdHitInfo hit={hit} standing={standing} />
       <span className="hidden text-[0.8125rem] text-fg-muted tabular-nums sm:block">{hit.creditHours ? `${hit.creditHours} hrs` : ""}</span>
       <span className="relative z-10 hidden sm:block">
         <CourseGpa gpa={hit.gpa} className="block text-right" />
