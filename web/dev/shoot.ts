@@ -46,6 +46,14 @@ const shots: { name: string; path: string; width: number; height: number; script
     script: `(() => { const l = document.querySelector('[role=listbox][aria-label=Schedules]'); l?.focus(); const k = (key) => l?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); k('ArrowDown'); setTimeout(() => k('p'), 100); setTimeout(() => k('ArrowUp'), 200); })()`,
   },
   {
+    name: "plan-geneds",
+    path: "/plan?mock=1",
+    width: 1440,
+    height: 900,
+    // open the gen ed sheet and pick Hist & Phil and US Minority with match any
+    script: `(() => { [...document.querySelectorAll('section button')].find(b => b.textContent?.trim() === 'Gen eds')?.click(); setTimeout(() => { for (const l of ['Humanities & the Arts: Hist & Phil', 'Cultural Studies: US Minority']) document.querySelector('[role=dialog] button[aria-label="' + l + '"]')?.click(); }, 300); setTimeout(() => [...document.querySelectorAll('[role=dialog] [role=radio]')].find(b => b.textContent === 'Any')?.click(), 500); })()`,
+  },
+  {
     name: "plan-target",
     path: "/plan?mock=1",
     width: 1440,
@@ -62,7 +70,7 @@ for (const s of shots) {
   await Bun.sleep(1500);
   if (s.script) {
     await v.evaluate(s.script);
-    await Bun.sleep(400);
+    await Bun.sleep(2000);
   }
   await Bun.write(`${out}/${s.name}.png`, await v.screenshot());
   console.log("wrote", s.name);

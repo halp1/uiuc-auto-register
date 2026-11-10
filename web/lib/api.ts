@@ -13,6 +13,7 @@ import type {
   GenEdHit,
   Plan,
   PlanCourse,
+  PlanGenEdResult,
   PlanGenerateResult,
   PlanPick,
   PublicSettings,
@@ -101,6 +102,11 @@ export type SimState = {
   schedule: Record<string, string[]>;
 };
 
+export type GenEdParams = { codes: string[]; match: "all" | "any"; q: string; sort: "gpa" | "matched" | "code"; noPrereq: boolean };
+
+const genEdParams = (o: GenEdParams) =>
+  `codes=${enc(o.codes.join(","))}&match=${o.match}&q=${enc(o.q)}&sort=${o.sort}${o.noPrereq ? "&noPrereq=1" : ""}`;
+
 export const api = {
   state: () => request<Snapshot>("GET", "/api/state"),
   events: (before: number | null, limit = 50) =>
@@ -110,17 +116,8 @@ export const api = {
   course: (term: string, subject: string, number: string, signal?: AbortSignal) =>
     request<CourseDetail>("GET", `/api/course/${enc(term)}/${enc(subject)}/${enc(number)}`, undefined, signal),
   syncCatalog: (term: string) => request<{ ok: true }>("POST", "/api/catalog/sync", { term }),
-  genEds: (
-    term: string,
-    o: { codes: string[]; match: "all" | "any"; q: string; sort: "gpa" | "matched" | "code"; noPrereq: boolean },
-    signal?: AbortSignal,
-  ) =>
-    request<{ hits: GenEdHit[]; total: number }>(
-      "GET",
-      `/api/geneds?term=${enc(term)}&codes=${enc(o.codes.join(","))}&match=${o.match}&q=${enc(o.q)}&sort=${o.sort}${o.noPrereq ? "&noPrereq=1" : ""}`,
-      undefined,
-      signal,
-    ),
+  genEds: (term: string, o: GenEdParams, signal?: AbortSignal) =>
+    request<{ hits: GenEdHit[]; total: number }>("GET", `/api/geneds?term=${enc(term)}&${genEdParams(o)}`, undefined, signal),
   syncGrades: () => request<{ ok: true; courses: number }>("POST", "/api/grades/sync"),
 
   createWanted: (body: {
@@ -151,6 +148,8 @@ export const api = {
   patchPlanCourse: (id: number, cid: number, body: Partial<Pick<PlanCourse, "included" | "excludedCrns" | "locked" | "backups">>) =>
     request<Plan>("PATCH", `/api/plans/${id}/courses/${cid}`, body),
   deletePlanCourse: (id: number, cid: number) => request<Plan>("DELETE", `/api/plans/${id}/courses/${cid}`),
+  planGenEds: (id: number, o: GenEdParams, signal?: AbortSignal) =>
+    request<PlanGenEdResult>("GET", `/api/plans/${id}/geneds?${genEdParams(o)}`, undefined, signal),
   generatePlan: (id: number) => request<PlanGenerateResult>("POST", `/api/plans/${id}/generate`),
   targetPlan: (id: number, picks: PlanPick[]) =>
     request<{ plan: Plan; wanted: WantedCourse[] }>("POST", `/api/plans/${id}/target`, { picks }),

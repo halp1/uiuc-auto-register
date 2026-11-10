@@ -20,6 +20,7 @@ import {
   type Plan,
   type PlanBreak,
   type PlanCourse,
+  type PlanGenEdResult,
   type PlanGenerateResult,
   type PlanPick,
   type PlanSchedule,
@@ -700,33 +701,8 @@ export async function mockRequest(method: string, path: string, body: any): Prom
     return hits;
   }
   if (key === "GET /api/geneds") {
-    const codes = (url.searchParams.get("codes") ?? "").split(",").filter(Boolean);
-    const any = url.searchParams.get("match") === "any";
-    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
-    const sort = url.searchParams.get("sort") ?? "gpa";
-    const noPrereq = url.searchParams.get("noPrereq") === "1";
-    if (url.searchParams.get("term") !== TERM || codes.length === 0) return { hits: [], total: 0 };
-    const hits: GenEdHit[] = [];
-    for (const c of courses) {
-      const matched = codes.filter(code => c.genEds?.includes(code));
-      if (any ? matched.length === 0 : matched.length < codes.length) continue;
-      if (q && !`${c.subject} ${c.number} ${c.title}`.toLowerCase().includes(q)) continue;
-      const prereq = /Prerequisites?: (.+?)\.?$/.exec(c.description)?.[1] ?? null;
-      const standingOnly = prereq ? standingOnlyPrereq(prereq) : null;
-      const have = settings.classStanding;
-      if (noPrereq && prereq && !(standingOnly && (!have || meetsStanding(have, standingOnly)))) continue;
-      hits.push({ ...summary(c), matchedCrn: null, matchedInstructor: null, matched, prereq, standingOnly });
-    }
-    const code = (h: GenEdHit) => `${h.subject} ${h.number.padStart(3, "0")}`;
-    const byGpa = (a: GenEdHit, b: GenEdHit) => (b.gpa ?? -1) - (a.gpa ?? -1);
-    hits.sort((a, b) =>
-      sort === "code"
-        ? code(a).localeCompare(code(b))
-        : sort === "matched"
-          ? b.matched.length - a.matched.length || byGpa(a, b) || code(a).localeCompare(code(b))
-          : byGpa(a, b) || code(a).localeCompare(code(b)),
-    );
-    return { hits: hits.slice(0, 200), total: hits.length };
+    if (url.searchParams.get("term") !== TERM) return { hits: [], total: 0 };
+    return genEdSearch(url);
   }
   if (key === "POST /api/grades/sync") {
     await wait(800);
@@ -1240,6 +1216,52 @@ function generate(plan: Plan): PlanGenerateResult {
   };
 }
 
+function genEdSearch(url: URL): { hits: GenEdHit[]; total: number } {
+  const codes = (url.searchParams.get("codes") ?? "").split(",").filter(Boolean);
+  const any = url.searchParams.get("match") === "any";
+  const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+  const sort = url.searchParams.get("sort") ?? "gpa";
+  const noPrereq = url.searchParams.get("noPrereq") === "1";
+  if (codes.length === 0) return { hits: [], total: 0 };
+  const hits: GenEdHit[] = [];
+  for (const c of courses) {
+    const matched = codes.filter(code => c.genEds?.includes(code));
+    if (any ? matched.length === 0 : matched.length < codes.length) continue;
+    if (q && !`${c.subject} ${c.number} ${c.title}`.toLowerCase().includes(q)) continue;
+    const prereq = /Prerequisites?: (.+?)\.?$/.exec(c.description)?.[1] ?? null;
+    const standingOnly = prereq ? standingOnlyPrereq(prereq) : null;
+    const have = settings.classStanding;
+    if (noPrereq && prereq && !(standingOnly && (!have || meetsStanding(have, standingOnly)))) continue;
+    hits.push({ ...summary(c), matchedCrn: null, matchedInstructor: null, matched, prereq, standingOnly });
+  }
+  const code = (h: GenEdHit) => `${h.subject} ${h.number.padStart(3, "0")}`;
+  const byGpa = (a: GenEdHit, b: GenEdHit) => (b.gpa ?? -1) - (a.gpa ?? -1);
+  hits.sort((a, b) =>
+    sort === "code"
+      ? code(a).localeCompare(code(b))
+      : sort === "matched"
+        ? b.matched.length - a.matched.length || byGpa(a, b) || code(a).localeCompare(code(b))
+        : byGpa(a, b) || code(a).localeCompare(code(b)),
+  );
+  return { hits: hits.slice(0, 200), total: hits.length };
+}
+
+/** Gen eds with a section that fits the plan: mock generate() with the gen ed as one more course. */
+function planGenEds(plan: Plan, url: URL): PlanGenEdResult {
+  const base = generate(plan);
+  const planFits = plan.courses.every(c => !c.included) || base.schedules.length > 0;
+  const hits: PlanGenEdResult["hits"] = [];
+  for (const hit of genEdSearch(url).hits) {
+    if (plan.courses.some(c => c.subject === hit.subject && c.number === hit.number)) continue;
+    const trial = { ...plan, sort: "open" as const, courses: [...(planFits ? plan.courses : []), planCourse(plan, hit.subject, hit.number)] };
+    const fits = new Set(
+      generate(trial).schedules.map(s => s.picks.find(p => p.subject === hit.subject && p.number === hit.number)!.crns.join()),
+    ).size;
+    if (fits) hits.push({ ...hit, fits });
+  }
+  return { hits, total: hits.length, planFits, truncated: false };
+}
+
 function findPlan(id: number) {
   const plan = plans.find(x => x.id === id);
   if (!plan) throw new MockError("That plan no longer exists.");
@@ -1297,6 +1319,10 @@ async function planRequest(method: string, url: URL, body: any): Promise<unknown
     plan.updatedAt = Date.now();
     pushPlans(plan.term);
     return clone(plan);
+  }
+  if ((m = /^\/api\/plans\/(\d+)\/geneds$/.exec(p)) && method === "GET") {
+    await wait(300);
+    return planGenEds(findPlan(Number(m[1])), url);
   }
   if ((m = /^\/api\/plans\/(\d+)\/generate$/.exec(p)) && method === "POST") {
     await wait(500);

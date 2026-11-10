@@ -81,6 +81,8 @@ The app checks seats every 10 seconds. When every section in a bundle has a seat
 
 Use the menu on a course to skip sections, lock one exact combination, or turn backups off. You can keep several named plans per term.
 
+To fill a requirement, choose **Gen eds** next to Courses and pick the requirements. The list only shows courses with a section that fits around your breaks, the classes you are already in, and at least one schedule of the plan's courses. It starts with courses you can take without prerequisites (or with only a class standing you meet), and **Open sections only** leaves out sections known to be full.
+
 ## Auto or approve
 
 In Settings, Registration:

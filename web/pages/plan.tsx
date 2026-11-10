@@ -4,6 +4,7 @@ import {
   ChevronsUpDown,
   Crosshair,
   Ellipsis,
+  GraduationCap,
   Lock,
   Pencil,
   Pin,
@@ -32,7 +33,8 @@ import type {
 import { parseCredits } from "../../src/core/credits";
 import { bundleGpa, instructorGrades, instructorKey, sectionInstructors } from "../../src/core/grades";
 import { ConfirmDialog } from "@/components/confirm";
-import { GpaBadge, GradeDisparity, gpaText } from "@/components/grades";
+import { GENED_SORTS, GenEdHitInfo, GenEdPicker, NoPrereqChip, toggleCode, useGenEdResults } from "@/components/geneds";
+import { CourseGpa, GpaBadge, GradeDisparity, gpaText } from "@/components/grades";
 import { SeatCount } from "@/components/data";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +52,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input, Kbd } from "@/components/ui/input";
 import { FilterChip, InlineError } from "@/components/ui/list";
+import { Segmented } from "@/components/ui/segmented";
 import { Select } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -57,7 +60,7 @@ import { Dot, Status } from "@/components/ui/status-dot";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { courseCode, termName, time12, timeRange } from "@/lib/format";
-import { navigate } from "@/lib/router";
+import { navigate, type GenEdMatch, type GenEdSort } from "@/lib/router";
 import { getState, local, seatKey, useStore } from "@/lib/store";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -657,6 +660,7 @@ function CoursesSection({
   mutate: (fn: () => Promise<Plan>) => Promise<void>;
 }) {
   const [sheetFor, setSheetFor] = useState<PlanCourse | null>(null);
+  const [genEdsOpen, setGenEdsOpen] = useState(false);
   const live = sheetFor ? plan.courses.find(c => c.id === sheetFor.id) ?? null : null;
 
   useEffect(() => {
@@ -705,6 +709,10 @@ function CoursesSection({
         </h2>
         <span className="text-xs text-fg-subtle tabular-nums">{plan.courses.length}</span>
         {creditsText && <span className="text-xs text-fg-subtle tabular-nums">({creditsText})</span>}
+        <Button variant="ghost" size="xs" className="-my-1 ml-auto" onClick={() => setGenEdsOpen(true)}>
+          <GraduationCap aria-hidden />
+          Gen eds
+        </Button>
       </div>
       <AddCourse plan={plan} mutate={mutate} />
       {plan.courses.length === 0 ? (
@@ -781,8 +789,39 @@ function CoursesSection({
         </ul>
       )}
       <SectionsSheet plan={plan} course={live} onClose={() => setSheetFor(null)} mutate={mutate} />
+      <GenEdSheet plan={plan} open={genEdsOpen} onClose={() => setGenEdsOpen(false)} />
     </section>
   );
+}
+
+/**
+ * Add a catalog course to the plan. The row shows right away and the server answer replaces it, or
+ * the row goes away again. Returns the error message, null when added.
+ */
+async function addToPlan(plan: Plan, hit: Pick<SearchHit, "subject" | "number" | "title" | "creditHours">): Promise<string | null> {
+  const pending: PlanCourse = {
+    id: -Date.now(),
+    planId: plan.id,
+    subject: hit.subject,
+    number: hit.number,
+    title: hit.title,
+    included: true,
+    excludedCrns: [],
+    locked: null,
+    backups: true,
+    position: plan.courses.length,
+    creditHours: hit.creditHours,
+    credits: parseCredits(hit.creditHours).credits,
+  };
+  local.upsertPlan({ ...plan, courses: [...plan.courses, pending] });
+  try {
+    local.upsertPlan(await api.addPlanCourse(plan.id, hit.subject, hit.number));
+    return null;
+  } catch (e) {
+    const current = getState().plans[plan.term]?.find(p => p.id === plan.id);
+    if (current) local.upsertPlan({ ...current, courses: current.courses.filter(c => c.id !== pending.id) });
+    return errorMessage(e);
+  }
 }
 
 function AddCourse({ plan, mutate }: { plan: Plan; mutate: (fn: () => Promise<Plan>) => Promise<void> }) {
@@ -825,29 +864,7 @@ function AddCourse({ plan, mutate }: { plan: Plan; mutate: (fn: () => Promise<Pl
     setQ("");
     setHits([]);
     setError(null);
-    // Show the row right away. The server answer replaces it (or the previous plan comes back on error).
-    const pending: PlanCourse = {
-      id: -Date.now(),
-      planId: plan.id,
-      subject: hit.subject,
-      number: hit.number,
-      title: hit.title,
-      included: true,
-      excludedCrns: [],
-      locked: null,
-      backups: true,
-      position: plan.courses.length,
-      creditHours: hit.creditHours,
-      credits: parseCredits(hit.creditHours).credits,
-    };
-    local.upsertPlan({ ...plan, courses: [...plan.courses, pending] });
-    try {
-      local.upsertPlan(await api.addPlanCourse(plan.id, hit.subject, hit.number));
-    } catch (e) {
-      const current = getState().plans[plan.term]?.find(p => p.id === plan.id);
-      if (current) local.upsertPlan({ ...current, courses: current.courses.filter(c => c.id !== pending.id) });
-      setError(errorMessage(e));
-    }
+    setError(await addToPlan(plan, hit));
   }
 
   const inPlan = (h: SearchHit) => plan.courses.some(c => c.subject === h.subject && c.number === h.number);
@@ -1192,6 +1209,143 @@ function SectionsSheet({
             </div>
           </>
         )}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// ---------- gen eds that fit ----------
+
+/** Gen ed finder narrowed to courses with a section combination that fits this plan. Filters stay while the plan is open. */
+function GenEdSheet({ plan, open, onClose }: { plan: Plan; open: boolean; onClose: () => void }) {
+  const standing = useStore(s => s.settings?.classStanding ?? null);
+  const syncedAt = useStore(s => s.status!.catalog.syncedAt);
+  const registered = useStore(s => s.wanted.filter(w => w.term === plan.term && w.state === "registered").length);
+  const [codes, setCodes] = useState<string[]>([]);
+  const [match, setMatch] = useState<GenEdMatch>("all");
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<GenEdSort>("gpa");
+  const [noPrereq, setNoPrereq] = useState(true);
+  const [addError, setAddError] = useState<string | null>(null);
+  const query = q.trim();
+  // Saved courses only: an optimistic row would start a search the server answer makes stale right away.
+  const inputs = inputsKey({ ...plan, courses: plan.courses.filter(c => c.id > 0) });
+  const full = plan.courses.length >= 12;
+
+  const { result, loading, error } = useGenEdResults(
+    open && codes.length > 0,
+    JSON.stringify([plan.id, inputs, codes, match, query, sort, noPrereq, standing, syncedAt, registered]),
+    signal => api.planGenEds(plan.id, { codes, match, q: query, sort, noPrereq }, signal),
+  );
+  const hits = result?.hits ?? null;
+
+  async function add(hit: NonNullable<typeof hits>[number]) {
+    setAddError(null);
+    setAddError(await addToPlan(plan, hit));
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={o => !o && onClose()}>
+      <SheetContent side="right" className="w-[560px] max-w-[92vw]">
+        <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-5">
+          <SheetTitle className="flex-1 text-base font-semibold">Gen eds that fit {plan.name}</SheetTitle>
+          <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={onClose}>
+            <X />
+          </Button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
+          <GenEdPicker codes={codes} onToggle={code => setCodes(c => toggleCode(c, code))} className="sm:grid-cols-2 xl:grid-cols-2" />
+
+          {codes.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-fg-subtle" aria-hidden />
+                <Input
+                  type="search"
+                  aria-label="Filter by subject or title"
+                  placeholder="Filter by subject or title"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={q}
+                  onChange={e => setQ(e.target.value)}
+                  className="h-9 pl-8 text-[0.8125rem] [&::-webkit-search-cancel-button]:hidden"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {codes.length > 1 && (
+                  <Segmented
+                    aria-label="Match requirements"
+                    value={match}
+                    onChange={setMatch}
+                    options={[
+                      { value: "all", label: "All" },
+                      { value: "any", label: "Any" },
+                    ]}
+                  />
+                )}
+                <NoPrereqChip active={noPrereq} onToggle={() => setNoPrereq(v => !v)} standing={standing} />
+                <Select aria-label="Sort" className="ml-auto w-44" value={sort} onValueChange={v => setSort(v as GenEdSort)} options={GENED_SORTS} />
+              </div>
+            </div>
+          )}
+
+          <InlineError>{error ?? addError}</InlineError>
+
+          {result && !result.planFits && (
+            <Status tone="warning" className="items-baseline whitespace-normal text-[0.8125rem] text-fg-muted" role="status">
+              Your plan has no schedule yet, so these only fit around breaks and registered classes
+            </Status>
+          )}
+
+          {codes.length > 0 && loading && !hits && (
+            <div className="flex flex-col gap-2" aria-busy aria-label="Finding gen eds that fit">
+              {[0, 1, 2, 3, 4].map(i => (
+                <Skeleton key={i} className="h-14" />
+              ))}
+            </div>
+          )}
+
+          {hits && hits.length === 0 && !loading && (
+            <p className="rounded-md border border-dashed border-border-strong px-3 py-6 text-center text-[0.8125rem] text-fg-muted">
+              No gen eds fit this plan
+            </p>
+          )}
+
+          {hits && hits.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <p className="text-xs text-fg-muted tabular-nums" role="status">
+                {result!.total > hits.length ? `${hits.length} of ${result!.total}` : result!.total} {result!.total === 1 ? "course fits" : "courses fit"}
+                {result!.truncated && ", more may fit"}
+              </p>
+              <ul
+                aria-label="Gen eds that fit"
+                className={cn(
+                  "overflow-hidden rounded-md border border-border transition-opacity duration-150 [&>*+*]:border-t [&>*+*]:border-border",
+                  loading && "opacity-60",
+                )}
+              >
+                {hits.map(hit => {
+                  const code = courseCode(hit);
+                  return (
+                    <li key={code} className="grid grid-cols-[72px_minmax(0,1fr)_auto_auto] items-center gap-x-3 bg-black py-2.5 pl-3 pr-1.5">
+                      <span className="font-mono text-[0.8125rem] font-medium">{code}</span>
+                      <GenEdHitInfo hit={hit} standing={standing} />
+                      <span className="flex flex-col items-end gap-0.5 text-xs text-fg-muted tabular-nums">
+                        <CourseGpa gpa={hit.gpa} />
+                        <span title="Section combinations that fit">
+                          {hit.fits} {hit.fits === 1 ? "fit" : "fits"}
+                        </span>
+                      </span>
+                      <Button variant="ghost" size="icon-xs" aria-label={`Add ${code} to ${plan.name}`} disabled={full} onClick={() => add(hit)}>
+                        <Plus />
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
       </SheetContent>
     </Sheet>
   );
