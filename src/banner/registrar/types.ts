@@ -225,17 +225,22 @@ export function parseWorkingSet(body: string, term: string): RegistrationModel[]
     .map(obj => ({ ...obj, courseReferenceNumber: crnOf(obj)! })) as RegistrationModel[];
 }
 
+/**
+ * Banner sends fwdURL even when the student may not register yet (verified 2026-11-12: before the time
+ * ticket it answers studentEligValid:false, the failures, and a fwdURL), so fwdURL alone never means open.
+ */
 export function parseTermSearch(body: string): Eligibility | null {
   const parsed = safeJson(body) as any;
   if (!parsed || typeof parsed !== "object") return null;
-  if (typeof parsed.fwdURL === "string" && parsed.regAllowed !== false) return { allowed: true, messages: [] };
   const failures = Array.isArray(parsed.studentEligFailures) ? parsed.studentEligFailures : [];
+  const refused = parsed.regAllowed === false || parsed.studentEligValid === false || (failures.length > 0 && parsed.studentEligValid !== true);
+  if (typeof parsed.fwdURL === "string" && !refused) return { allowed: true, messages: [] };
   const messages = failures
     .map((f: any) => (typeof f === "string" ? f : typeof f?.message === "string" ? f.message : null))
     .filter((m: string | null): m is string => Boolean(m))
     .map((m: string) => m.replace(/<[^>]*>/g, "").trim())
     .slice(0, 20);
-  if (parsed.regAllowed === false || failures.length) return { allowed: false, messages };
+  if (refused) return { allowed: false, messages };
   return null;
 }
 

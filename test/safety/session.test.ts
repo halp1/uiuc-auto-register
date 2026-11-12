@@ -363,6 +363,15 @@ describe("parsers", () => {
     expect(parseTermSearch(JSON.stringify({ fwdURL: "/x" }))).toEqual({ allowed: true, messages: [] });
     expect(parseTermSearch(JSON.stringify({ regAllowed: false, studentEligFailures: ["<b>Hold</b> on account"] }))).toEqual({ allowed: false, messages: ["Hold on account"] });
     expect(parseTermSearch("nope")).toBeNull();
+    // Before the time ticket UIUC still sends fwdURL. That must not read as open.
+    const beforeTicket = {
+      studentEligValid: false,
+      studentEligFailures: ["You have no Registration Time Ticket for the current time.", "You can register from 11/12/2026 11:20 AM to 04/30/2027 11:59 PM"],
+      fwdURL: "/StudentRegistrationSSB/ssb/classRegistration/classRegistration",
+    };
+    expect(parseTermSearch(JSON.stringify(beforeTicket))).toEqual({ allowed: false, messages: beforeTicket.studentEligFailures });
+    expect(parseTermSearch(JSON.stringify({ ...beforeTicket, studentEligValid: undefined }))?.allowed).toBe(false);
+    expect(parseTermSearch(JSON.stringify({ studentEligValid: true, studentEligFailures: ["notice"], fwdURL: "/x" }))?.allowed).toBe(true);
   });
 
   test("submit batch rows", () => {
