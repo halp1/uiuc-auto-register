@@ -18,7 +18,7 @@ COPY --chown=bun:bun web/ ./web/
 
 VOLUME ["/data"]
 EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=10 \
   CMD curl -fsS "http://127.0.0.1:3000/healthz" || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bun", "src/index.ts", "--host", "0.0.0.0", "--port", "3000", "--data", "/data"]
