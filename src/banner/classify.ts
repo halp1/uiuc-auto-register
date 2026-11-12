@@ -16,11 +16,14 @@ const TRANSIENT: RegExp[] = [
   /system (?:is )?(?:busy|unavailable)/i,
 ];
 
+/** Major, class, level, college, cohort, and campus restrictions. Some of these lift on a known date. */
+const RESTRICTION = /restrict/i;
+
 const PERMANENT: RegExp[] = [
   /prerequisite/i,
   /co-?requisite/i,
   /test score/i,
-  /restrict/i, // major/level/class/college/cohort/campus restrictions
+  RESTRICTION,
   /\bhold\b/i,
   /time conflict/i,
   /duplicate/i,
@@ -49,4 +52,13 @@ export function classifyMessages(messages: string[]): FailureClass {
   if (classes.includes("permanent")) return "permanent";
   if (classes.includes("unknown")) return "unknown";
   return "transient";
+}
+
+/**
+ * True when every message is a restriction and nothing else permanent (a prerequisite, hold, or time conflict
+ * does not lift on a release date). Used only for courses the student told to wait for a release date.
+ */
+export function restrictionOnly(messages: string[]): boolean {
+  const texts = messages.map(m => m.trim()).filter(Boolean);
+  return texts.length > 0 && texts.every(text => RESTRICTION.test(text) && !PERMANENT.some(p => p !== RESTRICTION && p.test(text)));
 }

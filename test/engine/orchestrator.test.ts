@@ -7,7 +7,7 @@ import type { Registrar } from "../../src/core/contracts";
 import { Store, defaultSettings } from "../../src/core/db";
 import { Events } from "../../src/core/events";
 import type { Approval, RegisterRequest, RegisterResult, Settings, StreamMessage } from "../../src/core/types";
-import { Orchestrator, REMIND_AFTER_MS, type OrchestratorDeps } from "../../src/engine/orchestrator";
+import { Orchestrator, RELEASE_RETRY_COOLDOWN_MS, RELEASE_RETRY_WINDOW_MS, REMIND_AFTER_MS, type OrchestratorDeps } from "../../src/engine/orchestrator";
 import { Poller } from "../../src/engine/poller";
 
 const T = SIM_TERM;
@@ -282,6 +282,65 @@ describe("auto mode", () => {
     await t.clock.advance(60_000);
     await t.tick();
     expect(t.registerCalls.length).toBe(1);
+  });
+});
+
+describe("wait until (cohort release dates)", () => {
+  const COHORT = "Student Cohort Restriction";
+
+  test("held course is skipped silently, then registers on its own when the wait ends", async () => {
+    const t = setup();
+    const held = t.want("CS", "233", [[LEC]]);
+    const free = t.want("MATH", "241", [["46060"]]);
+    t.store.updateWanted(held.id, { notBefore: new Date(t.clock.now() + 3_600_000).toISOString() });
+    for (const crn of [LEC, "46060"]) t.sim.setSeats(T, crn, 2);
+    await t.tick();
+    expect(t.registerCalls.map(call => call.addCrns)).toEqual([["46060"]]);
+    expect(t.store.listEvents().some(event => event.kind === "bundle_opened" && event.courseId === held.id)).toBe(false);
+
+    // No seat poll needed: the orchestrator wakes itself at the release time.
+    await t.clock.advance(3_600_000);
+    await t.orchestrator.idle();
+    expect(t.registerCalls.map(call => call.addCrns)).toEqual([["46060"], [LEC]]);
+    expect(t.store.getWanted(held.id)!.state).toBe("registered");
+    expect(t.store.getWanted(free.id)!.state).toBe("registered");
+  });
+
+  test("restriction on release day retries every minute instead of blocking", async () => {
+    const t = setup();
+    const course = t.want("CS", "233", [[LEC]]);
+    t.store.updateWanted(course.id, { notBefore: new Date(t.clock.now()).toISOString() });
+    t.sim.setSeats(T, LEC, 2);
+    for (let i = 0; i < 3; i++) t.sim.scriptError(null, COHORT);
+    await t.tick();
+    expect(t.bundles(course.id)).toEqual(["watching"]);
+    await t.clock.advance(RELEASE_RETRY_COOLDOWN_MS + 1);
+    await t.orchestrator.idle();
+    await t.clock.advance(RELEASE_RETRY_COOLDOWN_MS + 1);
+    await t.orchestrator.idle();
+    expect(t.registerCalls.length).toBe(3);
+    // One note for the whole retry run, no warnings, guard untouched.
+    expect(t.store.listEvents().filter(event => event.kind === "registration_failed")).toEqual([]);
+    expect(t.store.listEvents().filter(event => event.kind === "attempt").length).toBe(1);
+    await t.clock.advance(RELEASE_RETRY_COOLDOWN_MS + 1);
+    await t.orchestrator.idle();
+    expect(t.store.getWanted(course.id)!.state).toBe("registered");
+    expect(t.orchestrator.guardState()).toBeNull();
+  });
+
+  test.each([
+    ["no wait set", null, COHORT],
+    ["release window over", -RELEASE_RETRY_WINDOW_MS - 1, COHORT],
+    ["prerequisite on release day", 0, "Prerequisite and Test Score error"],
+    ["restriction plus a hold", 0, `${COHORT}; Student has a hold`],
+  ] as const)("still blocks: %s", async (_name, offset, message) => {
+    const t = setup();
+    const course = t.want("CS", "233", [[LEC]]);
+    if (offset !== null) t.store.updateWanted(course.id, { notBefore: new Date(t.clock.now() + offset).toISOString() });
+    t.sim.setSeats(T, LEC, 2);
+    t.sim.scriptError(null, message);
+    await t.tick();
+    expect(t.store.getWanted(course.id)!.state).toBe("blocked");
   });
 });
 

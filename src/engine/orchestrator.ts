@@ -16,7 +16,7 @@ import type {
   Settings,
   WantedCourse,
 } from "../core/types";
-import { classifyMessages } from "../banner/classify";
+import { classifyMessages, restrictionOnly } from "../banner/classify";
 import { courseForCrn, sectionsByCrn } from "../catalog/store";
 import { hasClosedCrn, isFullyOpen, openBundles, type SeatLookup } from "./planner";
 import { planConflicts } from "./schedule";
@@ -25,6 +25,12 @@ export const REMIND_AFTER_MS = 5 * 60 * 1000;
 export const TRANSIENT_COOLDOWN_MS = 30_000;
 /** Registration attempts are held until this close to the ticket time. */
 const TICKET_HOLD_LEAD_MS = 1000;
+/**
+ * After a course's wait-until time, restriction errors are retried for this long instead of blocking the
+ * bundle: departments lift cohort and major restrictions some time during the release day, not at a set minute.
+ */
+export const RELEASE_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const RELEASE_RETRY_COOLDOWN_MS = 60_000;
 
 export interface ApprovalHooks {
   approvalCreated(approval: Approval): void;
@@ -235,6 +241,21 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
     return course && bundle ? { course, bundle } : null;
   }
 
+  /** The course's wait-until instant while it is still ahead, else null. */
+  private courseHold(course: WantedCourse): number | null {
+    if (!course.notBefore) return null;
+    const at = Date.parse(course.notBefore);
+    return Number.isFinite(at) && this.deps.clock.now() < at ? at : null;
+  }
+
+  /** True during the release window after a course's wait-until time. */
+  private inReleaseWindow(course: WantedCourse): boolean {
+    if (!course.notBefore) return false;
+    const at = Date.parse(course.notBefore);
+    const now = this.deps.clock.now();
+    return Number.isFinite(at) && now >= at && now < at + RELEASE_RETRY_WINDOW_MS;
+  }
+
   private ticketHeld(settings: Settings): boolean {
     if (!settings.ticketAt) return false;
     const at = Date.parse(settings.ticketAt);
@@ -304,6 +325,8 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
     for (const course of courses) {
       if (this.stopped) break;
       if (!course.armed || course.state !== "watching") continue;
+      // Waiting for its release date: the student already knows it is open, so nothing is announced either.
+      if (this.courseHold(course) !== null) continue;
       if (course.bundles.some(bundle => store.pendingApprovalForBundle(bundle.id))) continue;
       const blockers = course.planId !== null ? this.planBlockers(course) : null;
       const candidates = openBundles(course, seats, ["watching", "open"]).filter(
@@ -459,6 +482,8 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
     const label = this.label(course, bundle.crns);
     const halted = this.haltReason();
     if (halted) return { result: "halt", message: halted, outcome: "aborted" };
+    const hold = this.courseHold(course);
+    if (hold !== null) return { result: "stop_course", message: `Waiting until ${course.notBefore}`, outcome: "aborted" };
 
     const registrar = this.deps.registrar();
     const request: RegisterRequest = {
@@ -479,8 +504,12 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
       result = { outcome: "failed", rows: [], classification: "unknown", message, ms: clock.now() - started };
     }
     const messages = [...result.rows.map(row => row.message ?? ""), result.message ?? ""].filter(text => text.trim());
-    const classification: FailureClass | null =
+    let classification: FailureClass | null =
       result.outcome === "failed" ? result.classification ?? classifyMessages(messages) : null;
+    // A restriction on its release day is expected until the department lifts it. Nothing was accepted, so retry.
+    const awaitingRelease =
+      classification === "permanent" && this.inReleaseWindow(course) && !result.rows.some(row => row.ok) && restrictionOnly(messages);
+    if (awaitingRelease) classification = "transient";
     store.addAttempt({
       bundleId: bundle.id,
       mode: registrar.kind,
@@ -558,6 +587,23 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
           store.setBundleState(bundle.id, "watching");
           const streak = (this.transientStreak.get(bundle.id) ?? 0) + 1;
           this.transientStreak.set(bundle.id, streak);
+          if (awaitingRelease) {
+            this.cooldownUntil.set(bundle.id, clock.now() + RELEASE_RETRY_COOLDOWN_MS);
+            // Expected for hours on a release day: say it once per bundle, not on every retry.
+            if (streak === 1) {
+              events.emit({
+                kind: "attempt",
+                severity: "info",
+                title: `${label} still restricted`,
+                detail: `${via}. ${message}. Retrying every minute for 24 hours after the release time.`,
+                courseId: course.id,
+                bundleId: bundle.id,
+                crns: bundle.crns,
+                payload: { result, classification },
+              });
+            }
+            return { result: "next", message, outcome: "failed" };
+          }
           if (!this.deps.firing?.()) this.cooldownUntil.set(bundle.id, clock.now() + TRANSIENT_COOLDOWN_MS);
           events.emit({
             kind: streak >= 2 ? "registration_failed" : "attempt",
@@ -636,11 +682,20 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
       if (until <= now) this.cooldownUntil.delete(bundleId);
       else next = Math.min(next, until);
     }
+    // Wake up exactly when a held course's wait ends, rather than on the next seat poll.
+    const term = this.deps.settings().activeTerm;
+    if (term) {
+      for (const course of this.deps.store.listWanted(term)) {
+        const hold = course.armed && course.state === "watching" ? this.courseHold(course) : null;
+        if (hold !== null) next = Math.min(next, hold);
+      }
+    }
     if (next === Infinity || this.stopped) return;
+    // Timers longer than about 24 days overflow, so a far hold wakes up hourly and re-plans.
     this.cooldownTimer = this.deps.clock.setTimeout(() => {
       this.cooldownTimer = null;
       this.evaluate("cooldown");
-    }, next - now + 1);
+    }, Math.min(next - now + 1, 60 * 60 * 1000));
   }
 
   private scheduleApprovalTimer(): void {

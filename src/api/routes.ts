@@ -545,6 +545,11 @@ export function apiRoutes(s: AppServices) {
           }
           patch.swapDropCrn = b.swapDropCrn === null ? null : String(b.swapDropCrn);
         }
+        if (b.notBefore !== undefined) {
+          const at = b.notBefore === null ? null : Date.parse(String(b.notBefore));
+          if (at !== null && !Number.isFinite(at)) throw new HttpError(400, "Enter a full date and time.");
+          patch.notBefore = at === null ? null : new Date(at).toISOString();
+        }
         const updated = s.store.updateWanted(c.id, patch);
         afterWatchlistChange("wanted_updated");
         return json(updated);

@@ -53,6 +53,8 @@ export interface WantedCourse {
   updatedAt: number;
   bundles: Bundle[];
   planId: number | null; // set when a plan targeted this course
+  /** ISO instant. No registration attempt before it (a cohort or major restriction lifts then). */
+  notBefore: string | null;
 }
 
 export interface SeatInfo {

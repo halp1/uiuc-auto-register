@@ -114,6 +114,8 @@ const MIGRATIONS: string[] = [
      PRIMARY KEY (subject, number, instructor_key));
    CREATE TABLE grade_meta (id INTEGER PRIMARY KEY CHECK (id = 1), fetched_at INTEGER NOT NULL, courses INTEGER NOT NULL);
    DELETE FROM cat_meta;`,
+  // Per-course wait: no registration attempt before this instant (cohort and major restriction release dates).
+  `ALTER TABLE wanted_courses ADD COLUMN not_before TEXT;`,
 ];
 
 export const PLAN_LIMITS = { plansPerTerm: 10, coursesPerPlan: 12, breaks: 20, excludedCrns: 60 } as const;
@@ -340,6 +342,7 @@ export class Store {
       updatedAt: row.updated_at,
       bundles: (bundles.all(row.id) as Row[]).map(bundleFromRow),
       planId: row.plan_id ?? null,
+      notBefore: row.not_before ?? null,
     }));
   }
 
@@ -385,7 +388,7 @@ export class Store {
 
   updateWanted(
     id: number,
-    patch: Partial<Pick<WantedCourse, "armed" | "kind" | "filters" | "swapDropCrn" | "state" | "title">>,
+    patch: Partial<Pick<WantedCourse, "armed" | "kind" | "filters" | "swapDropCrn" | "state" | "title" | "notBefore">>,
   ): WantedCourse | null {
     const map: Record<string, [string, (v: any) => unknown]> = {
       armed: ["armed", v => (v ? 1 : 0)],
@@ -394,6 +397,7 @@ export class Store {
       swapDropCrn: ["swap_drop_crn", v => v],
       state: ["state", v => v],
       title: ["title", v => v],
+      notBefore: ["not_before", v => v],
     };
     const sets: string[] = [];
     const values: any[] = [];
