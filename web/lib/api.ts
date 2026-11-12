@@ -129,7 +129,7 @@ export const api = {
     bundles?: string[][];
     filters?: AnyFilters;
   }) => request<WantedCourse>("POST", "/api/wanted", body),
-  patchWanted: (id: number, body: Partial<Pick<WantedCourse, "kind" | "filters" | "swapDropCrn">>) =>
+  patchWanted: (id: number, body: Partial<Pick<WantedCourse, "kind" | "filters" | "swapDropCrn" | "notBefore">>) =>
     request<WantedCourse>("PATCH", `/api/wanted/${id}`, body),
   deleteWanted: (id: number) => request<{ ok: true }>("DELETE", `/api/wanted/${id}`),
   reorder: (ids: number[]) => request<{ ok: true }>("POST", "/api/wanted/reorder", { ids }),

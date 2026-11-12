@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronLeft, Link2, Lock, Plus, RefreshCw, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, Hourglass, Link2, Lock, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { genEdReq, genEdShort } from "../../src/core/gened";
 import { instructorGrades, instructorKey, sectionInstructors } from "../../src/core/grades";
@@ -14,8 +14,9 @@ import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
+import { WaitUntilDialog } from "@/components/wait-until";
 import { api } from "@/lib/api";
-import { courseDisplayState, meetingTime, termName } from "@/lib/format";
+import { courseDisplayState, courseHoldAt, formatDateTime, meetingTime, termName, useNow } from "@/lib/format";
 import { hrefWithMock, linkClick } from "@/lib/router";
 import { local, seatKey, useStore } from "@/lib/store";
 import { cn, errorMessage } from "@/lib/utils";
@@ -180,6 +181,9 @@ function CourseEditor({ detail, back }: { detail: CourseDetail; back: React.Reac
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [armBusy, setArmBusy] = useState(false);
   const [armAfterSave, setArmAfterSave] = useState(true);
+  const [waitOpen, setWaitOpen] = useState(false);
+  const now = useNow(30_000);
+  const holdAt = wanted ? courseHoldAt(wanted, now) : null;
 
   const byCrn = useMemo(() => new Map(detail.sections.map(s => [s.crn, s])), [detail]);
   const seatOf = (crn: string): SeatInfo | null =>
@@ -331,7 +335,21 @@ function CourseEditor({ detail, back }: { detail: CourseDetail; back: React.Reac
             </span>
             <span className="sr-only">: </span>
           </h1>
-          {wanted && <CourseState state={courseDisplayState(wanted)} />}
+          {wanted && (
+            <CourseState
+              state={courseDisplayState(wanted, now)}
+              label={holdAt ? `Waiting until ${formatDateTime(holdAt)}` : undefined}
+            />
+          )}
+          {wanted && wanted.state !== "registered" && (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setWaitOpen(true)}>
+                <Hourglass aria-hidden />
+                {holdAt ? "Change wait" : "Wait until"}
+              </Button>
+              <WaitUntilDialog course={wanted} open={waitOpen} onOpenChange={setWaitOpen} />
+            </>
+          )}
         </div>
         <p className="text-base text-fg">{detail.title}</p>
         <div className="flex flex-wrap gap-2">

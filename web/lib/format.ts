@@ -139,12 +139,19 @@ export function courseCode(w: { subject: string; number: string }) {
   return `${w.subject} ${w.number}`;
 }
 
-export type CourseDisplayState = "watching" | "open" | "pending" | "registering" | "registered" | "blocked" | "unarmed";
+export type CourseDisplayState = "watching" | "open" | "pending" | "registering" | "registered" | "blocked" | "unarmed" | "held";
 
-export function courseDisplayState(course: WantedCourse): CourseDisplayState {
+/** The course's wait-until instant while it is still ahead, else null. */
+export function courseHoldAt(course: Pick<WantedCourse, "notBefore">, now: number): number | null {
+  const at = course.notBefore ? Date.parse(course.notBefore) : NaN;
+  return Number.isFinite(at) && at > now ? at : null;
+}
+
+export function courseDisplayState(course: WantedCourse, now = Date.now()): CourseDisplayState {
   if (course.state === "registered") return "registered";
   if (course.state === "blocked") return "blocked";
   if (!course.armed) return "unarmed";
+  if (courseHoldAt(course, now) !== null) return "held";
   const states = course.bundles.map(b => b.state);
   if (states.includes("registering")) return "registering";
   if (states.includes("pending_approval")) return "pending";

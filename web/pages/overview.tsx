@@ -4,6 +4,7 @@ import {
   ArrowUp,
   Ellipsis,
   GripVertical,
+  Hourglass,
   ListRestart,
   LogIn,
   LogOut,
@@ -30,8 +31,9 @@ import { InlineError, List, ListRow, PageHeader } from "@/components/ui/list";
 import { Status, type Tone } from "@/components/ui/status-dot";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
+import { WaitUntilDialog } from "@/components/wait-until";
 import { api } from "@/lib/api";
-import { countdown, courseCode, courseDisplayState, formatDateTime, relative, useNow } from "@/lib/format";
+import { countdown, courseCode, courseDisplayState, courseHoldAt, formatDateTime, relative, useNow } from "@/lib/format";
 import { coursePath, hrefWithMock, linkClick, navigate } from "@/lib/router";
 import { local, seatKey, useStore, type ClientState } from "@/lib/store";
 import { cn, errorMessage } from "@/lib/utils";
@@ -373,9 +375,11 @@ function WatchRow({
   const [armBusy, setArmBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [waitOpen, setWaitOpen] = useState(false);
   const [optimisticArmed, setOptimisticArmed] = useState<boolean | null>(null);
   const armed = optimisticArmed ?? course.armed;
-  const display = courseDisplayState({ ...course, armed });
+  const display = courseDisplayState({ ...course, armed }, now);
+  const holdAt = courseHoldAt(course, now);
   const seatOf = (crn: string) => seats[seatKey(course.term, crn)];
   const href = coursePath(course.term, course.subject, course.number);
 
@@ -476,7 +480,12 @@ function WatchRow({
         {rowMenu()}
       </div>
 
-      <CourseState state={display} className="relative col-start-2 @3xl:col-start-auto" />
+      <div className="relative col-start-2 flex flex-col gap-0.5 @3xl:col-start-auto">
+        <CourseState state={display} label={display === "held" ? "Waiting until" : undefined} />
+        {display === "held" && holdAt && (
+          <span className="pl-4 text-xs text-fg-muted tabular-nums">{formatDateTime(holdAt)}</span>
+        )}
+      </div>
 
       <div className="relative col-span-3 flex min-w-0 flex-wrap gap-1.5 @3xl:col-span-1">
         {course.bundles.length === 0 ? (
@@ -512,6 +521,7 @@ function WatchRow({
           local.removeWanted(course.id);
         }}
       />
+      <WaitUntilDialog course={course} open={waitOpen} onOpenChange={setWaitOpen} />
     </div>
   );
 
@@ -535,6 +545,10 @@ function WatchRow({
           <DropdownMenuItem disabled={index === count - 1} onSelect={() => onMove(index, index + 1)}>
             <ArrowDown aria-hidden />
             Move down
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={course.state === "registered"} onSelect={() => setWaitOpen(true)}>
+            <Hourglass aria-hidden />
+            {holdAt ? "Change wait" : "Wait until"}
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={!(course.state === "blocked" || course.bundles.some(b => b.state === "blocked"))}

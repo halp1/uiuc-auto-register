@@ -97,13 +97,14 @@ export const courseStateMeta: Record<CourseDisplayState, { tone: Tone; label: st
   registered: { tone: "ready", label: "Registered" },
   blocked: { tone: "error", label: "Blocked" },
   unarmed: { tone: "off", label: "Not armed" },
+  held: { tone: "neutral", label: "Waiting" },
 };
 
-export function CourseState({ state, className }: { state: CourseDisplayState; className?: string }) {
+export function CourseState({ state, label, className }: { state: CourseDisplayState; label?: string; className?: string }) {
   const meta = courseStateMeta[state];
   return (
     <Status tone={meta.tone} pulse={meta.pulse} className={cn("text-[0.8125rem]", className)}>
-      {meta.label}
+      {label ?? meta.label}
     </Status>
   );
 }
