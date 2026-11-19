@@ -27,7 +27,7 @@ It reads Banner's live seat counts (not Course Explorer's ten-minute-old status)
 - Registration terms are identified by Banner term codes (Spring 2027 = 120271).
 - Many courses need linked sections (lecture plus discussion or lab). A "bundle" is one all-or-nothing set of CRNs; a wanted course holds a ranked list of bundles, or "any valid combination" with day, time, and instructor exclusions.
 - The student may enter a registration time ticket; the app logs in early and submits at the opening second.
-- Notifications go to a Discord bot DM (with Register / Skip buttons and /status, /pause, /resume) and browser web push. Every route is off until the student enables it.
+- Notifications go to a Discord bot DM (with Register / Skip buttons) and browser web push. Every route is off until the student enables it.
 - Three modes: Simulated (default, fake Banner), Rehearsal (real login, read only), Live (real registration, needs an env flag plus a typed confirmation in the UI).
 - UIUC has no waitlists enabled.
 

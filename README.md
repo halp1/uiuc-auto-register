@@ -100,11 +100,11 @@ The app logs in 10 minutes before your ticket and tries to register right at the
 
 Setup asks you to pick at least one. You can add or change them later in Settings, Notifications, and choose which events go where.
 
-**Discord DM.** A private message from your own bot, with Register and Skip buttons. The bot also answers `/status`, `/pause`, and `/resume`.
+**Discord DM.** A private message from your own bot, with Register and Skip buttons.
 
 1. Create an application at https://discord.com/developers/applications.
 2. Open **Bot**, choose **Reset Token**, and copy the token.
-3. Open **OAuth2**, then **URL Generator**. Tick `bot` and `applications.commands`, open the link it makes, and add the bot to a server you are in. A new empty server works.
+3. Open **OAuth2**, then **URL Generator**. Tick `bot`, open the link it makes, and add the bot to a server you are in. A new empty server works.
 4. In Discord, turn on **Developer Mode** under Settings, Advanced. Right-click your own name and choose **Copy User ID**.
 5. Paste the token and your user ID into the app and send a test.
 
