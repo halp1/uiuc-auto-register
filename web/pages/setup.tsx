@@ -935,8 +935,7 @@ function NotifyStep({ settings }: { settings: PublicSettings }) {
                 Open <b>Bot</b>, choose <b>Reset Token</b>, and copy the token.
               </>,
               <>
-                Open <b>OAuth2</b>, then <b>URL Generator</b>. Tick <Mono>bot</Mono> and <Mono>applications.commands</Mono>, open the link it makes, and add the
-                bot to a server you're in. A new empty server works.
+                Open <b>OAuth2</b>, then <b>URL Generator</b>. Tick <Mono>bot</Mono>, open the link it makes, and add the bot to a server you're in. A new empty server works.
               </>,
               <>
                 In Discord, turn on <b>Developer Mode</b> under Settings, Advanced. Then right-click your own name and choose <b>Copy User ID</b>.

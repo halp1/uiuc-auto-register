@@ -128,11 +128,10 @@ export interface SimBannerApi {
   reset(): void;
 }
 
-/** What notification channels may call back into (Discord buttons, slash commands, push actions). */
+/** What notification channels may call back into (Discord buttons, push actions). */
 export interface ControlApi {
   approve(approvalId: number, via: string): Promise<{ ok: boolean; detail: string }>;
   skip(approvalId: number, via: string): Promise<{ ok: boolean; detail: string }>;
   pauseAll(via: string): void;
   resumeAll(via: string): void;
-  statusText(): string;
 }

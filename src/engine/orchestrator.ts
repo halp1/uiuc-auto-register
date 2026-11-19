@@ -5,7 +5,6 @@ import type { Clock } from "../core/clock";
 import type { ControlApi, OrchestratorApi, Registrar } from "../core/contracts";
 import type { Store } from "../core/db";
 import type { Events } from "../core/events";
-import { termLabel } from "../core/terms";
 import type {
   Approval,
   Bundle,
@@ -176,26 +175,6 @@ export class Orchestrator implements OrchestratorApi, ControlApi {
       detail: this.guard ? `Resumed via ${via}. The safety guard is still tripped; clear it in the dashboard.` : `Resumed via ${via}`,
     });
     this.evaluate("resume");
-  }
-
-  statusText(): string {
-    const settings = this.deps.settings();
-    const lines: string[] = [];
-    const term = settings.activeTerm;
-    lines.push(`Term: ${term ? termLabel(term) : "none selected"}`);
-    lines.push(settings.globalPaused ? "Registration: paused" : "Registration: running");
-    if (this.guard) lines.push(`Guard tripped: ${this.guard.detail}`);
-    if (term) {
-      const seats = this.seatLookup(term);
-      for (const course of this.deps.store.listWanted(term)) {
-        const open = course.bundles.filter(bundle => isFullyOpen(bundle.crns, seats)).length;
-        const state = course.state === "watching" ? (course.armed ? "watching" : "disarmed") : course.state;
-        lines.push(`${course.subject} ${course.number}: ${state}, ${open} of ${course.bundles.length} bundles open`);
-      }
-    }
-    const pending = this.deps.store.pendingApprovals();
-    if (pending.length) lines.push(`Waiting for approval: ${pending.map(approval => approval.label).join(", ")}`);
-    return lines.join("\n");
   }
 
   async stop(): Promise<void> {

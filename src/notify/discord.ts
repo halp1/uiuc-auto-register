@@ -1,20 +1,17 @@
-// Discord bot over the outbound gateway: DMs the owner, handles Register / Skip buttons and slash commands.
+// Discord bot over the outbound gateway: DMs the owner and handles Register / Skip buttons.
+// It never registers application commands, so it leaves any commands the same bot has elsewhere alone.
 
 import {
   ActionRowBuilder,
-  ApplicationIntegrationType,
   ButtonBuilder,
   ButtonStyle,
   Client,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
-  InteractionContextType,
   MessageFlags,
   Partials,
-  SlashCommandBuilder,
   type ButtonInteraction,
-  type ChatInputCommandInteraction,
   type Interaction,
   type User,
 } from "discord.js";
@@ -121,20 +118,6 @@ export function approvalButtons(approvalId: number): ActionRowBuilder<ButtonBuil
   );
 }
 
-export function slashCommands() {
-  const base = (name: string, description: string) =>
-    new SlashCommandBuilder()
-      .setName(name)
-      .setDescription(description)
-      .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
-      .setContexts(InteractionContextType.Guild, InteractionContextType.BotDM);
-  return [
-    base("status", "Show watcher status"),
-    base("pause", "Pause all seat checks and registration"),
-    base("resume", "Resume seat checks and registration"),
-  ];
-}
-
 // ---------- the bot ----------
 
 export interface DiscordChannelDeps {
@@ -194,7 +177,7 @@ export class DiscordChannel {
 
   private attach(client: Client, generation: number) {
     const live = () => generation === this.generation;
-    client.once(Events.ClientReady, async ready => {
+    client.once(Events.ClientReady, ready => {
       if (!live()) return;
       this.attempt = 0;
       const userId = this.deps.settings().discordUserId;
@@ -202,11 +185,6 @@ export class DiscordChannel {
         state: "ready",
         detail: userId ? `Connected as ${ready.user.tag}` : `Connected as ${ready.user.tag}. Add your Discord user ID so the bot knows who to DM.`,
       };
-      try {
-        await ready.application.commands.set(slashCommands().map(command => command.toJSON()));
-      } catch (error) {
-        this.log("could not register slash commands", error);
-      }
     });
     client.on(Events.InteractionCreate, interaction => {
       if (!live()) return;
@@ -312,7 +290,6 @@ export class DiscordChannel {
   private async onInteraction(interaction: Interaction): Promise<void> {
     const ownerId = this.deps.settings().discordUserId;
     if (interaction.isButton()) return this.onButton(interaction, ownerId);
-    if (interaction.isChatInputCommand()) return this.onCommand(interaction, ownerId);
   }
 
   private async onButton(interaction: ButtonInteraction, ownerId: string | null) {
@@ -344,33 +321,5 @@ export class DiscordChannel {
       .setTitle(original?.title ?? "Approval")
       .setDescription(outcome.text.slice(0, 4000) || (outcome.ok ? "Done" : "Failed"));
     await interaction.editReply({ embeds: [done], components: [] });
-  }
-
-  private async onCommand(interaction: ChatInputCommandInteraction, ownerId: string | null) {
-    if (!isAuthorized(interaction.user.id, ownerId)) {
-      await interaction.reply({ content: NOT_AUTHORIZED, flags: MessageFlags.Ephemeral });
-      return;
-    }
-    const control = this.deps.control();
-    if (!control) {
-      await interaction.reply({ content: "The app is still starting. Try again in a moment.", flags: MessageFlags.Ephemeral });
-      return;
-    }
-    const flags = interaction.inGuild() ? MessageFlags.Ephemeral : undefined;
-    switch (interaction.commandName) {
-      case "status":
-        await interaction.reply({ content: control.statusText().slice(0, 2000) || "No status available.", flags });
-        return;
-      case "pause":
-        control.pauseAll("discord");
-        await interaction.reply({ content: "Paused. Nothing will be checked or registered until you /resume.", flags });
-        return;
-      case "resume":
-        control.resumeAll("discord");
-        await interaction.reply({ content: "Resumed.", flags });
-        return;
-      default:
-        await interaction.reply({ content: "Unknown command.", flags: MessageFlags.Ephemeral });
-    }
   }
 }
