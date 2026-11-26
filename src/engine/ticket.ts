@@ -9,6 +9,7 @@ import type { Settings, SystemStatus } from "../core/types";
 export const PREWARM_LEAD_MS = 10 * 60 * 1000;
 export const FIRING_WINDOW_MS = 90_000;
 export const FIRING_TICK_MS = 1000;
+const MAX_WAIT_MS = 24 * 60 * 60 * 1000;
 
 type Phase = SystemStatus["ticket"]["phase"];
 
@@ -84,9 +85,13 @@ export class TicketScheduler implements TicketApi {
       return;
     }
     this.phase = "waiting";
+    // Delays above about 24.8 days overflow and fire at once, so a far ticket wakes daily and re-plans.
+    const wait = ticket - PREWARM_LEAD_MS - now;
     this.timer = this.deps.clock.setTimeout(() => {
-      if (generation === this.generation) this.prewarm(generation, ticket);
-    }, ticket - PREWARM_LEAD_MS - now);
+      if (generation !== this.generation) return;
+      if (wait > MAX_WAIT_MS) this.reschedule();
+      else this.prewarm(generation, ticket);
+    }, Math.min(wait, MAX_WAIT_MS));
   }
 
   private prewarm(generation: number, ticket: number): void {

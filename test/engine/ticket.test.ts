@@ -95,6 +95,22 @@ describe("TicketScheduler", () => {
     expect(t.evaluations).toEqual([]);
   });
 
+  // Real timers clamp a delay above 2^31-1 ms (about 24.8 days) to 1 ms, so a far ticket used to prewarm at once.
+  test("a ticket more than 25 days out waits instead of firing at once", async () => {
+    const day = 24 * 60 * 60_000;
+    const t = setup(30 * day);
+    const setTimeout = t.clock.setTimeout.bind(t.clock);
+    t.clock.setTimeout = (fn, ms) => setTimeout(fn, ms > 2 ** 31 - 1 ? 1 : ms);
+    t.scheduler.start();
+    await t.clock.advance(day);
+    expect(t.warmed).toEqual([]);
+    expect(t.scheduler.status().phase).toBe("waiting");
+    await t.clock.advance(29 * day - PREWARM_LEAD_MS);
+    expect(t.warmed.length).toBe(1);
+    await t.clock.advance(PREWARM_LEAD_MS);
+    expect(t.scheduler.status().phase).toBe("firing");
+  });
+
   test("stop cancels firing", async () => {
     const t = setup(0);
     t.scheduler.start();
